@@ -177,7 +177,7 @@ export async function answerQuestion(
       generatedImages.push(...turn.generatedImages);
       if (turn.generatedImages.length) {
         intent = "image_generation";
-        trace.push({ tool: "image_generation", label: "图像生成", detail: `生成 ${turn.generatedImages.length} 张图片`, status: "success" });
+        trace.push({ tool: "image_generation", label: "图像生成", detail: `生成 ${turn.generatedImages.length} 张图片` });
       }
       if (!turn.toolCalls.length) {
         finished = true;

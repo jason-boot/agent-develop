@@ -57,7 +57,7 @@ function ensureUserIdColumn(database: DatabaseSync, table: "conversations" | "mo
 
 function ensureAppSettingsUserKey(database: DatabaseSync) {
   const columns = database.prepare("PRAGMA table_info(app_settings)").all() as Array<{ name: string; pk: number }>;
-  if (columns.some((column) => column.name === "user_id" && column.pk > 0) && columns.find((column) => column.name === "setting_key")?.pk > 0) return;
+  if (columns.some((column) => column.name === "user_id" && column.pk > 0) && (columns.find((column) => column.name === "setting_key")?.pk ?? 0) > 0) return;
   database.exec("BEGIN IMMEDIATE");
   try {
     database.exec(`
