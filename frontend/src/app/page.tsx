@@ -31,6 +31,19 @@ type McpTool = { name: string; title?: string; description?: string; enabled: bo
 type ExternalMcpServer = { id: string; name: string; url: string; enabled: boolean; hasToken: boolean };
 type StoredProjectDirectory = { id: string; name: string; handle: FileSystemDirectoryHandle };
 
+async function readApiJson<T>(response: Response): Promise<T> {
+  const body = await response.text();
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    const isHtml = response.headers.get("content-type")?.toLowerCase().includes("text/html") || body.trimStart().startsWith("<");
+    if (response.status >= 500 || isHtml) {
+      throw new Error(`后端服务暂不可用（HTTP ${response.status}），请检查后端是否启动，以及 Nginx 的 /api 转发配置。`);
+    }
+    throw new Error(`后端返回了无法读取的响应（HTTP ${response.status}）。`);
+  }
+}
+
 function SunIcon({ className }: { className?: string }) {
   return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" /></svg>;
 }
@@ -532,13 +545,13 @@ export default function Home() {
     void (async () => {
       try {
         const response = await fetch("/api/conversations");
-        const data = await response.json() as { conversations?: Conversation[]; error?: string };
+        const data = await readApiJson<{ conversations?: Conversation[]; error?: string }>(response);
         if (!response.ok) throw new Error(data.error || "读取会话失败。");
         const saved = data.conversations || [];
         setConversations(saved);
         if (saved.length) {
           const detailResponse = await fetch(`/api/conversations/${encodeURIComponent(saved[0].id)}`);
-          const detail = await detailResponse.json() as { conversation?: Conversation; error?: string };
+          const detail = await readApiJson<{ conversation?: Conversation; error?: string }>(detailResponse);
           if (!detailResponse.ok || !detail.conversation) throw new Error(detail.error || "读取会话失败。");
           skipNextConversationPersistRef.current = true;
           setActiveConversationId(detail.conversation.id);
@@ -605,7 +618,7 @@ export default function Home() {
         method: "PUT", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title, messages: storedMessages, projectId: storedProjectId || null, projectName: projects.find((project) => project.id === storedProjectId)?.name || conversationsRef.current.find((conversation) => conversation.id === activeConversationId)?.projectName || null }),
         });
-        const data = await response.json() as { error?: string };
+        const data = await readApiJson<{ error?: string }>(response);
         if (!response.ok) throw new Error(data.error || "保存会话失败。");
         setConversations((items) => sortConversations([{ id: activeConversationId, title, updatedAt: Date.now(), pinned: items.find((item) => item.id === activeConversationId)?.pinned, ...(storedProjectId ? { projectId: storedProjectId, projectName: projects.find((project) => project.id === storedProjectId)?.name || items.find((item) => item.id === activeConversationId)?.projectName } : {}) }, ...items.filter((item) => item.id !== activeConversationId)]));
       } catch (e) { setError(e instanceof Error ? e.message : "保存本地会话失败。"); }
@@ -723,7 +736,7 @@ export default function Home() {
     if (loading || conversation.id === activeConversationId) return;
     try {
       const response = await fetch(`/api/conversations/${encodeURIComponent(conversation.id)}`);
-      const data = await response.json() as { conversation?: Conversation; error?: string };
+      const data = await readApiJson<{ conversation?: Conversation; error?: string }>(response);
       if (!response.ok || !data.conversation) throw new Error(data.error || "读取会话失败。");
       const openedConversation = data.conversation;
       skipNextConversationPersistRef.current = true;
@@ -758,7 +771,7 @@ export default function Home() {
     const pinned = !conversation.pinned;
     try {
       const response = await fetch(`/api/conversations/${encodeURIComponent(conversation.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pinned }) });
-      const data = await response.json() as { error?: string };
+      const data = await readApiJson<{ error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "更新置顶状态失败。");
       setConversations((items) => sortConversations(items.map((item) => item.id === conversation.id ? { ...item, pinned } : item)));
     } catch (e) { setError(e instanceof Error ? e.message : "更新置顶状态失败。"); }
@@ -772,7 +785,7 @@ export default function Home() {
     setError("");
     try {
       const detailResponse = await fetch(`/api/conversations/${encodeURIComponent(target.id)}`);
-      const detail = await detailResponse.json() as { conversation?: Conversation; error?: string };
+      const detail = await readApiJson<{ conversation?: Conversation; error?: string }>(detailResponse);
       if (!detailResponse.ok || !detail.conversation) throw new Error(detail.error || "读取会话失败。");
       const stored = detail.conversation;
       const response = await fetch(`/api/conversations/${encodeURIComponent(target.id)}`, {
@@ -780,7 +793,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title, messages: stored.messages || [], projectId: stored.projectId || null, projectName: stored.projectName || null }),
       });
-      const data = await response.json() as { error?: string };
+      const data = await readApiJson<{ error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "重命名会话失败。");
       setConversations((items) => sortConversations(items.map((item) => item.id === target.id ? { ...item, title, updatedAt: Date.now() } : item)));
       setConversationToRename(null);
@@ -798,7 +811,7 @@ export default function Home() {
     setError("");
     try {
       const response = await fetch(`/api/conversations/${encodeURIComponent(target.id)}`, { method: "DELETE" });
-      const data = await response.json() as { deleted?: boolean; error?: string };
+      const data = await readApiJson<{ deleted?: boolean; error?: string }>(response);
       if (!response.ok || !data.deleted) throw new Error(data.error || "删除会话失败。");
       setConversations((items) => items.filter((item) => item.id !== target.id));
       setConversationToDelete(null);
@@ -834,7 +847,7 @@ export default function Home() {
     try {
       for (const id of target.conversationIds) {
         const response = await fetch(`/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
-        const data = await response.json() as { deleted?: boolean; error?: string };
+        const data = await readApiJson<{ deleted?: boolean; error?: string }>(response);
         if (response.ok && data.deleted) deletedIds.push(id);
         else throw new Error(data.error || `删除项目聊天失败：${id}`);
       }
@@ -873,7 +886,7 @@ export default function Home() {
 
   useEffect(() => {
     fetch("/api/models").then(async (response) => {
-      const data = await response.json() as ModelList;
+      const data = await readApiJson<ModelList>(response);
       if (!response.ok) throw new Error("读取模型配置失败");
       setModels(data.models);
       setSelectedModelId(data.defaultModelId || "");
@@ -954,7 +967,25 @@ export default function Home() {
     try {
       const projectFiles = requestProjectDirectory ? await readProjectSnapshot(requestProjectDirectory) : undefined;
       const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: value, images: imagesToSend.map(({ mimeType, dataUrl }) => ({ mimeType, dataUrl })), modelId: selectedModelId || null, history, ...(projectFiles ? { projectFiles } : {}) }) });
-      if (!response.ok) { const data = await response.json(); throw new Error(data.error || "查询失败"); }
+      const contentType = response.headers.get("content-type") || "";
+      if (!response.ok) {
+        let apiError = "";
+        if (contentType.toLowerCase().includes("json")) {
+          try {
+            const data = await readApiJson<{ error?: string }>(response);
+            apiError = data.error || "";
+          } catch { /* Fall back to a readable service error below. */ }
+        }
+        if (!apiError) {
+          apiError = response.status >= 500 || contentType.toLowerCase().includes("text/html")
+            ? `后端服务暂不可用（HTTP ${response.status}），请检查后端是否启动，以及 Nginx 的 /api 转发配置。`
+            : `聊天请求失败（HTTP ${response.status}）。`;
+        }
+        throw new Error(apiError);
+      }
+      if (!contentType.toLowerCase().includes("application/x-ndjson")) {
+        throw new Error("后端没有返回聊天数据流，请检查后端服务是否启动，以及 Nginx 是否将 /api 请求转发到后端。");
+      }
       if (!response.body) throw new Error("浏览器无法读取流式响应。");
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -998,7 +1029,9 @@ export default function Home() {
       } finally { reader.releaseLock(); }
       if (!completed) throw new Error("流式响应意外结束，请重试。");
     } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : "查询失败";
+      const errorMessage = e instanceof TypeError && /fetch/i.test(e.message)
+        ? "无法连接到后端服务，请检查后端进程和 Nginx 的 /api 转发配置。"
+        : e instanceof Error ? e.message : "查询失败";
       setMessages((items) => {
         const next = items[items.length - 1]?.role === "assistant" ? items.slice(0, -1) : [...items];
         return [...next, { role: "assistant", content: errorMessage, error: true }];
@@ -1018,7 +1051,7 @@ export default function Home() {
   }
 
   async function persistModelList(response: Response, preferredId?: string) {
-    const data = await response.json() as ModelList & { error?: string };
+    const data = await readApiJson<ModelList & { error?: string }>(response);
     if (!response.ok) throw new Error(data.error || "模型配置操作失败。");
     setModels(data.models);
     const nextId = preferredId || data.defaultModelId || "";
@@ -1059,7 +1092,7 @@ export default function Home() {
     setProviderConfigLoading(true); setModelFeedback("");
     try {
       const response = await fetch("/api/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "latest-provider", vendor }) });
-      const data = await response.json() as { id?: string; vendor?: string; protocol?: ModelProtocol; baseUrl?: string; fullAddress?: boolean; modelsUrl?: string; hasApiKey?: boolean; error?: string };
+      const data = await readApiJson<{ id?: string; vendor?: string; protocol?: ModelProtocol; baseUrl?: string; fullAddress?: boolean; modelsUrl?: string; hasApiKey?: boolean; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "没有找到该厂商已保存的配置。");
       setCredentialSourceModelId(data.hasApiKey ? data.id || "" : "");
       setModelListUrl(data.modelsUrl || "");
@@ -1084,7 +1117,7 @@ export default function Home() {
     try {
       const vendor = modelVendor === "aliyun-bailian" ? modelVendor : modelProviderName.trim();
       const response = await fetch("/api/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "discover", vendor, modelsUrl: modelListUrl, apiKey: modelApiKey, credentialSourceModelId }) });
-      const data = await response.json() as { models?: string[]; error?: string };
+      const data = await readApiJson<{ models?: string[]; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "获取模型列表失败。");
       setProviderModels(data.models || []);
       setProviderModelRows((rows) => rows.length ? rows : [{ displayName: "", upstreamModel: "" }]);
@@ -1133,7 +1166,7 @@ export default function Home() {
     setModelTesting(true); setModelFeedback("");
     try {
       const response = await fetch("/api/models/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: editingModelId || undefined, credentialSourceModelId, name: modelName, protocol: modelProtocol, baseUrl: modelBaseUrl, fullAddress: modelFullAddress, model: modelId || providerModelRows[0]?.upstreamModel || "", apiKey: modelApiKey }) });
-      const data = await response.json() as { error?: string; message?: string };
+      const data = await readApiJson<{ error?: string; message?: string }>(response);
       if (!response.ok) throw new Error(data.error || "连接测试失败。");
       setModelFeedback(data.message || "连接成功。");
     } catch (e) { setModelFeedback(e instanceof Error ? e.message : "连接测试失败。"); }
@@ -1190,7 +1223,7 @@ export default function Home() {
     setExternalMcpTesting(true); setExternalMcpError(""); setExternalMcpTested(false);
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "test", url: externalMcpUrl, token: externalMcpToken }) });
-      const data = await response.json() as { tools?: McpTool[]; error?: string };
+      const data = await readApiJson<{ tools?: McpTool[]; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "MCP 连接测试失败。");
       setExternalMcpPreview(data.tools || []); setExternalMcpTested(true);
     } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "MCP 连接测试失败。"); }
@@ -1201,7 +1234,7 @@ export default function Home() {
     setExternalMcpSaving(true); setExternalMcpError("");
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save", name: externalMcpName, url: externalMcpUrl, token: externalMcpToken }) });
-      const data = await response.json() as { server?: ExternalMcpServer; error?: string };
+      const data = await readApiJson<{ server?: ExternalMcpServer; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "添加 MCP 服务器失败。");
       if (data.server) setExternalMcpServers((items) => [...items, data.server!]);
       setExternalMcpEditorOpen(false);
@@ -1213,7 +1246,7 @@ export default function Home() {
     setExternalMcpLoading(server.id); setExternalMcpError("");
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "inspect", id: server.id }) });
-      const data = await response.json() as { tools?: McpTool[]; error?: string };
+      const data = await readApiJson<{ tools?: McpTool[]; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "读取外部 MCP 工具失败。");
       setExternalMcpTools((items) => ({ ...items, [server.id]: data.tools || [] }));
     } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "读取外部 MCP 工具失败。"); }
@@ -1224,7 +1257,7 @@ export default function Home() {
     setExternalMcpUpdating(server.id); setExternalMcpError("");
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle-server", id: server.id, enabled: !server.enabled }) });
-      const data = await response.json() as { enabled?: boolean; error?: string };
+      const data = await readApiJson<{ enabled?: boolean; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "更新 MCP 状态失败。");
       setExternalMcpServers((items) => items.map((item) => item.id === server.id ? { ...item, enabled: Boolean(data.enabled) } : item));
     } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "更新 MCP 状态失败。"); }
@@ -1236,7 +1269,7 @@ export default function Home() {
     setExternalMcpUpdating(key); setExternalMcpError("");
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle-tool", id: server.id, name: tool.name, enabled: !tool.enabled }) });
-      const data = await response.json() as { enabled?: boolean; manuallyAllowed?: boolean; error?: string };
+      const data = await readApiJson<{ enabled?: boolean; manuallyAllowed?: boolean; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "更新外部 MCP 工具状态失败。");
       setExternalMcpTools((items) => ({ ...items, [server.id]: (items[server.id] || []).map((item) => item.name === tool.name ? { ...item, enabled: Boolean(data.enabled), manuallyAllowed: Boolean(data.manuallyAllowed) } : item) }));
     } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "更新外部 MCP 工具状态失败。"); }
@@ -1253,7 +1286,7 @@ export default function Home() {
     setExternalMcpUpdating(server.id); setExternalMcpError("");
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: server.id }) });
-      const data = await response.json() as { error?: string };
+      const data = await readApiJson<{ error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "删除 MCP 服务器失败。");
       setExternalMcpServers((items) => items.filter((item) => item.id !== server.id));
       setExternalMcpTools((items) => { const next = { ...items }; delete next[server.id]; return next; });
