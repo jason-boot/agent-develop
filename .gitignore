@@ -10,3 +10,9 @@ release/
 npm-debug.log*
 
 *.tsbuildinfo
+frontend/out/
+frontend/.next/
+frontend/.next-dev/
+backend/.next/
+backend/.next-dev/
+backend/.agent-data/

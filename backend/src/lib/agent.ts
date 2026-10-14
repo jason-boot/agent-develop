@@ -1,4 +1,4 @@
-import type { ChatReply, DailyModelUsage, ProjectFileChange, ToolTrace, UsageChartSpec, UsageRecord, UsageSummary } from "@/lib/types";
+import type { ChatReply, DailyModelUsage, ProjectFileChange, ToolTrace, UsageChartSpec, UsageRecord, UsageSummary } from "@little-sunshine/shared/types";
 import { callUsageMcpTool, connectUsageMcpClient } from "@/lib/usage-mcp";
 import { listExternalMcpServers } from "@/lib/external-mcp-config";
 import { ModelServiceError, requestModelAgentTurn, type AgentImageInput, type AgentMessage, type AgentToolCall, type AgentToolDefinition, type ModelConfig } from "@/lib/model-config";

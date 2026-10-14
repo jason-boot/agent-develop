@@ -1,31 +1,25 @@
 {
-  "name": "llm-usage-agent",
-  "version": "0.1.0",
+  "name": "little-sunshine",
+  "version": "0.2.0",
   "private": true,
   "main": "electron/main.cjs",
+  "workspaces": [
+    "frontend",
+    "backend",
+    "packages/shared"
+  ],
   "scripts": {
-    "dev": "NEXT_DIST_DIR=.next-dev next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "tsc --noEmit",
-    "desktop:dev": "concurrently -k -s first \"npm run dev\" \"wait-on http://127.0.0.1:3000 && electron .\"",
+    "dev": "concurrently -k -s first \"npm run dev --workspace @little-sunshine/backend\" \"npm run dev --workspace @little-sunshine/frontend\"",
+    "build": "npm run build --workspace @little-sunshine/backend && npm run build --workspace @little-sunshine/frontend",
+    "start": "npm run start --workspace @little-sunshine/backend",
+    "lint": "npm run lint --workspace @little-sunshine/backend && npm run lint --workspace @little-sunshine/frontend",
+    "desktop:dev": "concurrently -k -s first \"npm run dev --workspace @little-sunshine/backend\" \"npm run dev --workspace @little-sunshine/frontend\" \"wait-on http://127.0.0.1:3000 && electron .\"",
     "desktop:build": "npm run build && electron-builder"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.3",
-    "@types/node": "^22.15.21",
-    "@types/react": "^19.1.6",
-    "@types/react-dom": "^19.1.6",
     "concurrently": "^9.2.0",
     "electron": "^37.2.6",
     "electron-builder": "^26.0.12",
-    "next": "^15.5.27",
-    "postcss": "^8.5.29",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "shadcn": "^4.21.4",
-    "tailwindcss": "^4.3.3",
-    "typescript": "^5.8.3",
     "wait-on": "^8.0.4"
   },
   "build": {
@@ -39,57 +33,28 @@
     ],
     "extraResources": [
       {
-        "from": ".next/standalone",
-        "to": "standalone",
-        "filter": [
-          "**/*"
-        ]
+        "from": "backend/.next/standalone",
+        "to": "backend-standalone",
+        "filter": ["**/*"]
       },
       {
-        "from": ".next/static",
-        "to": "standalone/.next/static",
-        "filter": [
-          "**/*"
-        ]
+        "from": "frontend/out",
+        "to": "frontend",
+        "filter": ["**/*"]
       }
     ],
     "linux": {
-      "target": [
-        "AppImage"
-      ],
+      "target": ["AppImage"],
       "category": "Utility"
     },
     "win": {
-      "target": [
-        "nsis"
-      ]
+      "target": ["nsis"]
     },
     "mac": {
-      "target": [
-        "dmg"
-      ]
+      "target": ["dmg"]
     }
   },
   "allowScripts": {
     "electron@37.10.3": true
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
-    "@radix-ui/react-dialog": "^1.2.0",
-    "@radix-ui/react-label": "^2.1.16",
-    "@radix-ui/react-select": "^2.3.8",
-    "@radix-ui/react-separator": "^1.1.16",
-    "@radix-ui/react-slot": "^1.4.0",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "cn": "^0.4.0",
-    "diff": "^8.0.4",
-    "lucide-react": "^1.55.0",
-    "mysql2": "^3.24.5",
-    "radix-ui": "^1.7.0",
-    "tailwind-merge": "^3.7.0",
-    "tw-animate-css": "^1.4.0",
-    "undici": "^6.29.0",
-    "zod": "^4.6.5"
   }
 }

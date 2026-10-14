@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ChatReply, DailyModelUsage, ProjectFileChange, ToolTrace, UsageChartSpec, UsageRecord } from "@/lib/types";
+import type { ChatReply, DailyModelUsage, ProjectFileChange, ToolTrace, UsageChartSpec, UsageRecord } from "@little-sunshine/shared/types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";

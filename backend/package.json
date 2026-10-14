@@ -1,0 +1,26 @@
+{
+  "name": "@little-sunshine/backend",
+  "version": "0.2.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3001",
+    "build": "next build",
+    "start": "node .next/standalone/backend/server.js",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@little-sunshine/shared": "*",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "diff": "^8.0.4",
+    "mysql2": "^3.24.5",
+    "next": "^15.5.27",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "undici": "^6.29.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  }
+}

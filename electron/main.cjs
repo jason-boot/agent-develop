@@ -1,10 +1,12 @@
 const { app, BrowserWindow, Menu, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
+const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
 
 let serverProcess;
+let staticServer;
 let mainWindow;
 let shuttingDown = false;
 app.setName("Usage Copilot");
@@ -55,6 +57,82 @@ function showStartupError(message) {
   errorWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<meta charset="utf-8"><body style="font:15px system-ui;padding:32px;color:#222"><h2>应用启动失败</h2><p>${safeMessage}</p><p>请检查应用配置目录中的数据库、模型与 MCP 配置。</p></body>`)}`);
 }
 
+function startStaticProxy(frontendDirectory, backendPort) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((request, response) => {
+      const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+      if (requestUrl.pathname === "/api" || requestUrl.pathname.startsWith("/api/")) {
+        const proxy = http.request({
+          hostname: "127.0.0.1",
+          port: backendPort,
+          method: request.method,
+          path: request.url,
+          headers: { ...request.headers, host: `127.0.0.1:${backendPort}` },
+        }, (upstream) => {
+          response.writeHead(upstream.statusCode || 502, upstream.headers);
+          upstream.pipe(response);
+        });
+        proxy.on("error", () => {
+          if (!response.headersSent) response.writeHead(502);
+          response.end("Backend unavailable");
+        });
+        request.pipe(proxy);
+        return;
+      }
+
+      let pathname;
+      try {
+        pathname = decodeURIComponent(requestUrl.pathname);
+      } catch (_) {
+        response.writeHead(400).end("Bad request");
+        return;
+      }
+      const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+      const filePath = path.resolve(frontendDirectory, relativePath);
+      if (filePath !== frontendDirectory && !filePath.startsWith(`${frontendDirectory}${path.sep}`)) {
+        response.writeHead(403).end("Forbidden");
+        return;
+      }
+      fs.readFile(filePath, (error, content) => {
+        if (error) {
+          response.writeHead(404).end("Not found");
+          return;
+        }
+        const extension = path.extname(filePath).toLowerCase();
+        const contentTypes = {
+          ".css": "text/css; charset=utf-8",
+          ".html": "text/html; charset=utf-8",
+          ".ico": "image/x-icon",
+          ".jpeg": "image/jpeg",
+          ".jpg": "image/jpeg",
+          ".js": "text/javascript; charset=utf-8",
+          ".json": "application/json; charset=utf-8",
+          ".png": "image/png",
+          ".svg": "image/svg+xml",
+          ".txt": "text/plain; charset=utf-8",
+          ".webp": "image/webp",
+          ".woff": "font/woff",
+          ".woff2": "font/woff2",
+        };
+        response.writeHead(200, { "Content-Type": contentTypes[extension] || "application/octet-stream" });
+        if (request.method === "HEAD") response.end();
+        else response.end(content);
+      });
+    });
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("无法启动本地前端服务。"));
+        return;
+      }
+      staticServer = server;
+      resolve(`http://127.0.0.1:${address.port}`);
+    });
+  });
+}
+
 async function createWindow() {
   let url;
   if (!app.isPackaged) {
@@ -62,7 +140,8 @@ async function createWindow() {
   } else {
     const port = await choosePort();
     const resourceRoot = process.resourcesPath;
-    const serverPath = path.join(resourceRoot, "standalone", "server.js");
+    const backendRoot = path.join(resourceRoot, "backend-standalone", "backend");
+    const serverPath = path.join(backendRoot, "server.js");
     const environment = {
       ...process.env,
       USAGE_AGENT_CONFIG_DIR: app.getPath("userData"),
@@ -72,14 +151,14 @@ async function createWindow() {
       NODE_ENV: "production",
     };
     serverProcess = spawn(process.execPath, [serverPath], {
-      cwd: path.join(resourceRoot, "standalone"),
+      cwd: backendRoot,
       env: environment,
       stdio: "ignore",
       windowsHide: true,
     });
     serverProcess.on("error", () => {});
-    url = `http://127.0.0.1:${port}`;
-    await waitForServer(url);
+    await waitForServer(`http://127.0.0.1:${port}/api/health`);
+    url = await startStaticProxy(path.join(resourceRoot, "frontend"), port);
   }
 
   mainWindow = new BrowserWindow({
@@ -118,6 +197,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   shuttingDown = true;
+  if (staticServer) staticServer.close();
   if (serverProcess && serverProcess.exitCode === null) serverProcess.kill();
 });
 app.on("window-all-closed", () => {
