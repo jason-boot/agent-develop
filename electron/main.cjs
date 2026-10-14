@@ -15,7 +15,7 @@ function openConfigFolder() {
   const configDirectory = app.getPath("userData");
   fs.mkdirSync(configDirectory, { recursive: true });
   const databaseConfig = path.join(configDirectory, "database.json");
-  const exampleConfig = path.join(app.getAppPath(), "database.example.json");
+  const exampleConfig = path.join(app.getAppPath(), "backend", "database.example.json");
   if (!fs.existsSync(databaseConfig) && fs.existsSync(exampleConfig)) {
     fs.copyFileSync(exampleConfig, databaseConfig, fs.constants.COPYFILE_EXCL);
     try { fs.chmodSync(databaseConfig, 0o600); } catch (_) { /* Keep platform defaults if chmod is unavailable. */ }

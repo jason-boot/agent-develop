@@ -50,13 +50,13 @@ npm run build
 
 ```bash
 sudo install -d -o ubuntu -g ubuntu -m 750 /var/lib/little-sunshine
-sudo -u ubuntu cp database.example.json /var/lib/little-sunshine/database.json
+sudo -u ubuntu test -e /var/lib/little-sunshine/database.json || sudo -u ubuntu cp backend/database.example.json /var/lib/little-sunshine/database.json
 chmod 600 /var/lib/little-sunshine/database.json
 ```
 
 编辑 `/var/lib/little-sunshine/database.json`。默认 `provider` 为 `sqlite`，SQLite 文件 `conversations.sqlite` 也会保存在该目录。选择 MySQL 时，先创建数据库并配置连接信息。应用重启后才会加载数据库配置变更。
 
-如服务器上没有仓库目录，可先把仓库根目录的 `database.example.json` 复制到服务器临时位置，再执行上述复制命令。
+如服务器上没有仓库目录，可先把仓库 `backend/` 目录中的 `database.example.json` 复制到服务器临时位置，再执行上述复制命令。
 
 ### 配置账号注册与第三方登录
 
@@ -70,14 +70,22 @@ https://你的域名/api/auth/oauth/gitee/callback
 https://你的域名/api/auth/oauth/google/callback
 ```
 
-将仓库中的 `backend/auth.example.json` 复制到后端数据目录并命名为 `auth.json`：
+将仓库中的 `backend/auth.example.json` 复制到后端数据目录并命名为 `auth.json`。如果该文件已存在，请不要覆盖，以免丢失已配置的 OAuth 凭据：
 
 ```bash
-sudo -u ubuntu cp backend/auth.example.json /var/lib/little-sunshine/auth.json
+sudo -u ubuntu test -e /var/lib/little-sunshine/auth.json || sudo -u ubuntu cp backend/auth.example.json /var/lib/little-sunshine/auth.json
 sudo -u ubuntu chmod 600 /var/lib/little-sunshine/auth.json
 ```
 
-`auth.json` 使用 `providers` 配置第三方平台。仓库模板包含 GitHub、Gitee 和 Google 示例；未填写凭据的平台不会显示登录或绑定入口。Gitee 配置使用 `https://gitee.com/oauth/authorize`、`https://gitee.com/oauth/token` 和 `https://gitee.com/api/v5/user`，权限范围为 `user_info`。Google 配置使用 OpenID Connect UserInfo（`sub` 作为第三方用户 ID），权限范围为 `openid profile email`。按平台填写 `clientId`、`clientSecret`，并将回调地址中的域名替换成实际站点域名；Google Cloud 中配置的授权重定向 URI 必须与 `auth.json` 的 `callbackUrl` 完全相同。参考 [Gitee OAuth 文档](https://gitee.com/api/v5/oauth_doc) 和 [Google OAuth Web 应用文档](https://developers.google.com/identity/protocols/oauth2/web-server)。
+编辑 `/var/lib/little-sunshine/auth.json`，将模板中中文提示替换为实际值：
+
+- `appBaseUrl`：应用对外访问地址，例如 `https://sunshine.example.com`。
+- `jwtSecret`：至少 40 个字符的随机密钥。若保留模板提示，后端会自动生成并保存到 `jwt-secret.key`。
+- `providers.github`、`providers.gitee`、`providers.google`：分别填写对应平台的 `clientId` 和 `clientSecret`，并把 `callbackUrl` 中的域名替换为实际域名。
+
+登录页始终显示 GitHub、Gitee 和 Google 三个平台图标；未填写某个平台凭据时，点击该图标会提示补充配置。配置文件由 `USAGE_AGENT_CONFIG_DIR/auth.json` 指定；本部署示例中即 `/var/lib/little-sunshine/auth.json`。
+
+Google Cloud 的 **Authorized redirect URIs**、GitHub/Gitee 应用设置中的回调地址，都必须与对应 provider 的 `callbackUrl` 完全一致。Gitee 配置使用 `https://gitee.com/oauth/authorize`、`https://gitee.com/oauth/token` 和 `https://gitee.com/api/v5/user`，权限范围为 `user_info`。Google 配置使用 OpenID Connect UserInfo（`sub` 作为第三方用户 ID），权限范围为 `openid profile email`。参考 [Gitee OAuth 文档](https://gitee.com/api/v5/oauth_doc) 和 [Google OAuth Web 应用文档](https://developers.google.com/identity/protocols/oauth2/web-server)。
 
 本机开发时，将 `appBaseUrl` 和对应 provider 的 `callbackUrl` 改为 `http://localhost:3000` 下的地址。后端依次从 `USAGE_AGENT_CONFIG_DIR/auth.json`、当前工作目录下的 `.agent-data/auth.json`、当前工作目录的 `auth.json`、当前工作目录下的 `backend/auth.json` 读取配置；也可通过 `JWT_SECRET`、`APP_BASE_URL` 环境变量覆盖相应配置。JWT 签名密钥首次启动时生成并保存在数据目录的 `jwt-secret.key`，请在备份中保留该文件。
 

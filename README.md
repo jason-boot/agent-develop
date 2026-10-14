@@ -62,7 +62,7 @@ server {
 
 ## 数据库配置
 
-应用会话、模型配置和外部 MCP 配置由后端存储，支持 SQLite 或 MySQL。配置文件 `database.json` 放在 `USAGE_AGENT_CONFIG_DIR` 指定的目录；未设置时使用后端工作目录下的 `.agent-data/`。没有配置文件时默认使用 SQLite，数据库文件为 `conversations.sqlite`。可复制 `database.example.json` 后编辑。选择 MySQL 时，服务会自动创建所需表；需提前创建数据库，并为账号授予建表、增删改查权限。修改配置后重启后端。
+应用会话、模型配置和外部 MCP 配置由后端存储，支持 SQLite 或 MySQL。配置文件 `database.json` 放在 `USAGE_AGENT_CONFIG_DIR` 指定的目录；未设置时使用后端工作目录下的 `.agent-data/`。没有配置文件时默认使用 SQLite，数据库文件为 `conversations.sqlite`。可复制 `backend/database.example.json` 后编辑。选择 MySQL 时，服务会自动创建所需表；需提前创建数据库，并为账号授予建表、增删改查权限。修改配置后重启后端。
 
 SQLite 和 MySQL 数据分别存储，切换 `provider` 不会自动复制现有数据。数据库表预留了 `user_id`，登录接入前固定为 `1`。
 

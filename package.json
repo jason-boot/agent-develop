@@ -29,7 +29,7 @@
     "files": [
       "electron/**/*",
       "package.json",
-      "database.example.json"
+      "backend/database.example.json"
     ],
     "extraResources": [
       {
