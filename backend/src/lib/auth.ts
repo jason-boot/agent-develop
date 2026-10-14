@@ -72,7 +72,8 @@ function providerConfig(providerId: string): OAuthProvider | null {
   if (!/^[a-z0-9_-]{2,40}$/.test(providerId)) return null;
   const config = authConfig();
   const entry = config.providers?.[providerId];
-  if (isConfigPlaceholder(entry?.clientId) || isConfigPlaceholder(entry?.clientSecret)) return null;
+  if (typeof entry?.clientId !== "string" || !entry.clientId || typeof entry.clientSecret !== "string" || !entry.clientSecret) return null;
+  if (isConfigPlaceholder(entry.clientId) || isConfigPlaceholder(entry.clientSecret)) return null;
   const defaults = providerId === "github" ? {
     authorizationUrl: "https://github.com/login/oauth/authorize", tokenUrl: "https://github.com/login/oauth/access_token",
     userInfoUrl: "https://api.github.com/user", scope: "read:user", tokenRequestFormat: "json" as const,
