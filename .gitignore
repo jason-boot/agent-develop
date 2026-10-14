@@ -1,0 +1,12 @@
+node_modules/
+.next/
+.next-dev/
+out/
+dist/
+release/
+.agent-data/
+.env*
+!.env.example
+npm-debug.log*
+
+*.tsbuildinfo
