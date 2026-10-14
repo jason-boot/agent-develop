@@ -1,3 +1,4 @@
+import { authenticated } from "@/lib/auth";
 import { connectUsageMcpClient } from "@/lib/usage-mcp";
 import { listExternalMcpServers, removeExternalMcpServer, saveExternalMcpServer, updateExternalMcpServer } from "@/lib/external-mcp-config";
 
@@ -29,7 +30,7 @@ async function inspect(url: string, token?: string) {
   }
 }
 
-export async function GET() {
+async function handlerGET(request: Request) {
   try {
     const servers = await listExternalMcpServers();
     return Response.json({ servers: servers.map(({ token, ...server }) => ({ ...server, hasToken: Boolean(token) })) });
@@ -37,8 +38,9 @@ export async function GET() {
     return Response.json({ error: error instanceof Error ? error.message : "读取外部 MCP 配置失败。" }, { status: 500 });
   }
 }
+export const GET = authenticated(handlerGET);
 
-export async function POST(request: Request) {
+async function handlerPOST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>;
     if (body.action === "test") {
@@ -82,3 +84,4 @@ export async function POST(request: Request) {
     return Response.json({ error: error instanceof Error ? error.message : "外部 MCP 操作失败。" }, { status: 500 });
   }
 }
+export const POST = authenticated(handlerPOST);

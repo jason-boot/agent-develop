@@ -1,14 +1,16 @@
+import { authenticated } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { discoverProviderModels, findLatestProviderConfig, listPublicModels, removeModel, saveModel, saveModelsBatch, setDefaultModel } from "@/lib/model-config";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+async function handlerGET(request: Request) {
   try { return NextResponse.json(await listPublicModels()); }
   catch { return NextResponse.json({ error: "读取模型配置失败。" }, { status: 500 }); }
 }
+export const GET = authenticated(handlerGET);
 
-export async function POST(request: Request) {
+async function handlerPOST(request: Request) {
   try {
     const body = await request.json() as { action?: string; id?: string; model?: string; models?: Array<{ name: string; model: string }>; name?: string; vendor?: string; protocol?: "chat" | "messages" | "responses"; modelsUrl?: string; baseUrl?: string; fullAddress?: boolean; apiKey?: string; credentialSourceModelId?: string };
     if (body.action === "default") return NextResponse.json(await setDefaultModel(body.id || null));
@@ -33,3 +35,4 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "保存模型配置失败。" }, { status: 400 });
   }
 }
+export const POST = authenticated(handlerPOST);

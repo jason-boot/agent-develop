@@ -1,10 +1,11 @@
+import { authenticated } from "@/lib/auth";
 import { deleteConversation, getConversation, saveConversation, setConversationPinned, type StoredMessage } from "@/lib/local-db";
 
 export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-export async function GET(_request: Request, { params }: RouteContext) {
+async function handlerGET(_request: Request, { params }: RouteContext) {
   try {
     const { id } = await params;
     const conversation = await getConversation(id);
@@ -14,8 +15,9 @@ export async function GET(_request: Request, { params }: RouteContext) {
     return Response.json({ error: "读取本地会话失败。" }, { status: 500 });
   }
 }
+export const GET = authenticated(handlerGET);
 
-export async function PUT(request: Request, { params }: RouteContext) {
+async function handlerPUT(request: Request, { params }: RouteContext) {
   try {
     const { id } = await params;
     const body = await request.json() as { title?: unknown; messages?: unknown; projectId?: unknown; projectName?: unknown };
@@ -46,8 +48,9 @@ export async function PUT(request: Request, { params }: RouteContext) {
     return Response.json({ error: "保存本地会话失败。" }, { status: 500 });
   }
 }
+export const PUT = authenticated(handlerPUT);
 
-export async function PATCH(request: Request, { params }: RouteContext) {
+async function handlerPATCH(request: Request, { params }: RouteContext) {
   try {
     const { id } = await params;
     const body = await request.json() as { pinned?: unknown };
@@ -59,8 +62,9 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     return Response.json({ error: "更新会话置顶状态失败。" }, { status: 500 });
   }
 }
+export const PATCH = authenticated(handlerPATCH);
 
-export async function DELETE(_request: Request, { params }: RouteContext) {
+async function handlerDELETE(_request: Request, { params }: RouteContext) {
   try {
     const { id } = await params;
     return Response.json({ deleted: await deleteConversation(id) });
@@ -69,3 +73,4 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     return Response.json({ error: "删除本地会话失败。" }, { status: 500 });
   }
 }
+export const DELETE = authenticated(handlerDELETE);

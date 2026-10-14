@@ -16,3 +16,5 @@ frontend/.next-dev/
 backend/.next/
 backend/.next-dev/
 backend/.agent-data/
+backend/auth.json
+/auth.json

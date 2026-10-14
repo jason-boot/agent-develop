@@ -1,3 +1,4 @@
+import { authenticated } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { answerQuestion } from "@/lib/agent";
 import { findModel, getModelStore, ModelServiceError, type AgentImageInput } from "@/lib/model-config";
@@ -47,7 +48,7 @@ function parseImages(value: unknown, currentTotal: number): { images: AgentImage
   return { images, total };
 }
 
-export async function POST(request: Request) {
+async function handlerPOST(request: Request) {
   try {
     const body = await request.json();
     const question = typeof body.question === "string" ? body.question.trim() : "";
@@ -93,3 +94,4 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: chatErrorMessage(error) }, { status: 500 });
   }
 }
+export const POST = authenticated(handlerPOST);

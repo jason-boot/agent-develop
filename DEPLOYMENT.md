@@ -58,6 +58,33 @@ chmod 600 /var/lib/little-sunshine/database.json
 
 如服务器上没有仓库目录，可先把仓库根目录的 `database.example.json` 复制到服务器临时位置，再执行上述复制命令。
 
+### 配置账号注册与第三方登录
+
+用户使用应用用户名和密码注册，数据库中的 `users.id` 是唯一用户 ID。GitHub、Gitee 等第三方账号通过 `user_identities` 绑定到该用户，不会单独创建应用用户。第三方账号首次登录若尚未绑定，会提示先注册或登录，再从左下角账户菜单完成绑定。
+
+分别在 GitHub 的 **Settings → Developer settings → OAuth Apps**、Gitee 的第三方应用设置，以及 Google Cloud 的 OAuth 客户端设置中创建 OAuth 应用。Homepage URL 填写站点地址；Google 客户端类型选择 **Web application**。授权回调地址按需填写：
+
+```text
+https://你的域名/api/auth/oauth/github/callback
+https://你的域名/api/auth/oauth/gitee/callback
+https://你的域名/api/auth/oauth/google/callback
+```
+
+将仓库中的 `backend/auth.example.json` 复制到后端数据目录并命名为 `auth.json`：
+
+```bash
+sudo -u ubuntu cp backend/auth.example.json /var/lib/little-sunshine/auth.json
+sudo -u ubuntu chmod 600 /var/lib/little-sunshine/auth.json
+```
+
+`auth.json` 使用 `providers` 配置第三方平台。仓库模板包含 GitHub、Gitee 和 Google 示例；未填写凭据的平台不会显示登录或绑定入口。Gitee 配置使用 `https://gitee.com/oauth/authorize`、`https://gitee.com/oauth/token` 和 `https://gitee.com/api/v5/user`，权限范围为 `user_info`。Google 配置使用 OpenID Connect UserInfo（`sub` 作为第三方用户 ID），权限范围为 `openid profile email`。按平台填写 `clientId`、`clientSecret`，并将回调地址中的域名替换成实际站点域名；Google Cloud 中配置的授权重定向 URI 必须与 `auth.json` 的 `callbackUrl` 完全相同。参考 [Gitee OAuth 文档](https://gitee.com/api/v5/oauth_doc) 和 [Google OAuth Web 应用文档](https://developers.google.com/identity/protocols/oauth2/web-server)。
+
+本机开发时，将 `appBaseUrl` 和对应 provider 的 `callbackUrl` 改为 `http://localhost:3000` 下的地址。后端依次从 `USAGE_AGENT_CONFIG_DIR/auth.json`、当前工作目录下的 `.agent-data/auth.json`、当前工作目录的 `auth.json`、当前工作目录下的 `backend/auth.json` 读取配置；也可通过 `JWT_SECRET`、`APP_BASE_URL` 环境变量覆盖相应配置。JWT 签名密钥首次启动时生成并保存在数据目录的 `jwt-secret.key`，请在备份中保留该文件。
+
+配置后执行 `pm2 restart little-sunshine-api --update-env`。真实的 `auth.json` 不要提交到 Git；仓库已忽略 `.agent-data/` 目录。
+
+登录有效期为 7 天，使用 HttpOnly JWT Cookie。每个请求都会校验用户存在、启用状态和 token 版本；暂不保存独立 session 记录。HTTPS 部署时 Cookie 会自动设置 Secure 属性。注册用户名为 3–32 个字母、数字、中文、下划线或连字符，密码为 8–128 个字符。
+
 ### 用 PM2 启动后端
 
 以 `ubuntu` 用户在 `/opt/little-sunshine/` 下创建 `ecosystem.config.cjs`：
@@ -166,4 +193,4 @@ npm run desktop:build
 
 ## 安全说明
 
-当前项目尚未接入登录认证，拆分前后端不会自动增加访问控制。API 包含聊天、模型配置和 MCP 配置接口；正式公开部署前，应先在可信网络中使用，或为 API 增加认证与授权。
+Web API 除健康检查、注册/登录和第三方 OAuth 入口/回调外均要求有效的 JWT 登录 Cookie。请为公网域名启用 HTTPS，并只在后端配置 OAuth Client Secret。桌面安装版使用本机用户数据目录，不要求账号登录。

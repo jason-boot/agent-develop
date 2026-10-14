@@ -1,9 +1,10 @@
+import { authenticated } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { findModel, requestModelCompletion, type ModelConfig } from "@/lib/model-config";
 
 export const runtime = "nodejs";
 
-export async function POST(request: Request) {
+async function handlerPOST(request: Request) {
   try {
     const body = await request.json() as Partial<ModelConfig> & { credentialSourceModelId?: string };
     const saved = body.id ? await findModel(body.id) : null;
@@ -23,3 +24,4 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "连接测试失败。" }, { status: 502 });
   }
 }
+export const POST = authenticated(handlerPOST);

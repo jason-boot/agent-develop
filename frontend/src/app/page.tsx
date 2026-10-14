@@ -14,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { diffLines } from "diff";
-import { ArrowDown, ArrowUp, ChevronDown, FolderOpen, FolderPlus, MoreHorizontal, Paperclip, Pencil, Pin, Plus, Trash2, TriangleAlert, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Plus, Trash2, TriangleAlert, X } from "lucide-react";
 
 type ImageAttachment = { id: string; name: string; mimeType: "image/jpeg" | "image/png" | "image/webp"; dataUrl: string };
 type Message = { role: "assistant" | "user"; content: string; images?: ImageAttachment[]; generatedImages?: string[]; result?: ChatReply; projectId?: string; error?: boolean };
@@ -29,7 +29,7 @@ type ModelVendor = "aliyun-bailian" | "custom";
 type BailianRegion = "beijing" | "singapore" | "hong-kong" | "tokyo" | "frankfurt" | "virginia";
 type McpTool = { name: string; title?: string; description?: string; enabled: boolean; readOnly?: boolean; destructive?: boolean; manuallyAllowed?: boolean; canEnable?: boolean };
 type ExternalMcpServer = { id: string; name: string; url: string; enabled: boolean; hasToken: boolean };
-type StoredProjectDirectory = { id: string; name: string; handle: FileSystemDirectoryHandle };
+type StoredProjectDirectory = { id: string; name: string; handle: FileSystemDirectoryHandle; ownerId?: number; storageKey?: string };
 
 async function readApiJson<T>(response: Response): Promise<T> {
   const body = await response.text();
@@ -50,47 +50,51 @@ function SunIcon({ className }: { className?: string }) {
 
 function openProjectDirectoryDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("dq-copilot-project-directories", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("directories", { keyPath: "id" });
+    const request = indexedDB.open("dq-copilot-project-directories", 2);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains("directories")) database.createObjectStore("directories", { keyPath: "id" });
+      if (!database.objectStoreNames.contains("userDirectories")) database.createObjectStore("userDirectories", { keyPath: "storageKey" });
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error || new Error("打开项目目录记录失败。"));
   });
 }
 
-async function getStoredProjectDirectories() {
+async function getStoredProjectDirectories(ownerId: number) {
   const database = await openProjectDirectoryDatabase();
   return new Promise<StoredProjectDirectory[]>((resolve, reject) => {
-    const request = database.transaction("directories", "readonly").objectStore("directories").getAll();
-    request.onsuccess = () => { const projects = request.result as StoredProjectDirectory[]; database.close(); resolve(projects); };
+    const request = database.transaction("userDirectories", "readonly").objectStore("userDirectories").getAll();
+    request.onsuccess = () => { const projects = (request.result as StoredProjectDirectory[]).filter((project) => project.ownerId === ownerId); database.close(); resolve(projects); };
     request.onerror = () => { database.close(); reject(request.error || new Error("读取项目目录记录失败。")); };
   });
 }
 
-async function getStoredProjectDirectory(id: string) {
+async function getStoredProjectDirectory(ownerId: number, id: string) {
   const database = await openProjectDirectoryDatabase();
   return new Promise<StoredProjectDirectory | undefined>((resolve, reject) => {
-    const request = database.transaction("directories", "readonly").objectStore("directories").get(id);
+    const request = database.transaction("userDirectories", "readonly").objectStore("userDirectories").get(`${ownerId}:${id}`);
     request.onsuccess = () => { const project = request.result as StoredProjectDirectory | undefined; database.close(); resolve(project); };
     request.onerror = () => { database.close(); reject(request.error || new Error("读取项目目录记录失败。")); };
   });
 }
 
-async function saveStoredProjectDirectory(project: StoredProjectDirectory) {
+async function saveStoredProjectDirectory(ownerId: number, project: StoredProjectDirectory) {
   const database = await openProjectDirectoryDatabase();
   return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction("directories", "readwrite");
-    transaction.objectStore("directories").put(project);
+    const transaction = database.transaction("userDirectories", "readwrite");
+    transaction.objectStore("userDirectories").put({ ...project, ownerId, storageKey: `${ownerId}:${project.id}` });
     transaction.oncomplete = () => { database.close(); resolve(); };
     transaction.onerror = () => { database.close(); reject(transaction.error || new Error("保存项目目录记录失败。")); };
     transaction.onabort = () => { database.close(); reject(transaction.error || new Error("保存项目目录记录失败。")); };
   });
 }
 
-async function removeStoredProjectDirectory(id: string) {
+async function removeStoredProjectDirectory(ownerId: number, id: string) {
   const database = await openProjectDirectoryDatabase();
   return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction("directories", "readwrite");
-    transaction.objectStore("directories").delete(id);
+    const transaction = database.transaction("userDirectories", "readwrite");
+    transaction.objectStore("userDirectories").delete(`${ownerId}:${id}`);
     transaction.oncomplete = () => { database.close(); resolve(); };
     transaction.onerror = () => { database.close(); reject(transaction.error || new Error("删除项目目录记录失败。")); };
     transaction.onabort = () => { database.close(); reject(transaction.error || new Error("删除项目目录记录失败。")); };
@@ -430,7 +434,8 @@ function DailyModelTrendChart({ points, chartSpec, from, to }: { points: DailyMo
   </section>;
 }
 
-export default function Home() {
+function ChatApp({ authenticated, userId, username, unboundProviders = [], onRequireLogin, onLogout }: { authenticated: boolean; userId?: number; username?: string; unboundProviders?: Array<{ id: string; name: string }>; onRequireLogin: () => void; onLogout: () => void }) {
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([{ role: "assistant", content: welcome }]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState("");
@@ -527,21 +532,22 @@ export default function Home() {
   conversationsRef.current = conversations;
 
   useEffect(() => {
+    projectDirectoriesRef.current.clear();
+    setProjects([]);
+    if (!authenticated || !userId) { setProjectDirectoryStorageReady(true); return; }
+    setProjectDirectoryStorageReady(false);
     let cancelled = false;
-    void getStoredProjectDirectories().then((storedProjects) => {
+    void getStoredProjectDirectories(userId).then((storedProjects) => {
       if (cancelled) return;
       for (const project of storedProjects) projectDirectoriesRef.current.set(project.id, project.handle);
-      setProjects((items) => {
-        const knownIds = new Set(items.map((project) => project.id));
-        return [...items, ...storedProjects.filter((project) => !knownIds.has(project.id)).map(({ id, name }) => ({ id, name }))];
-      });
     }).catch((e) => {
       if (!cancelled) setProjectError(e instanceof Error ? e.message : "读取已保存的项目目录失败。");
     }).finally(() => { if (!cancelled) setProjectDirectoryStorageReady(true); });
     return () => { cancelled = true; };
-  }, []);
+  }, [authenticated, userId]);
 
   useEffect(() => {
+    if (!authenticated) { setConversationStorageReady(true); return; }
     void (async () => {
       try {
         const response = await fetch("/api/conversations");
@@ -561,7 +567,7 @@ export default function Home() {
           setMessages(detail.conversation.messages || []);
           if (activeProjectId) {
             try {
-              const stored = await getStoredProjectDirectory(activeProjectId);
+              const stored = await getStoredProjectDirectory(userId!, activeProjectId);
               if (!stored) throw new Error("请点击“打开本地项目”重新选择并授权当前会话所属的项目目录。");
               const directory = stored.handle;
               const accessHandle = directory as FileSystemDirectoryHandle & { queryPermission?: (descriptor: { mode: "readwrite" }) => Promise<PermissionState> };
@@ -583,7 +589,7 @@ export default function Home() {
       } catch (e) { setError(e instanceof Error ? e.message : "读取本地会话失败。"); }
       finally { setConversationStorageReady(true); }
     })();
-  }, []);
+  }, [authenticated]);
   useEffect(() => {
     if (!openConversationMenuId && !openProjectMenuId) return;
     const closeMenuOutside = (event: PointerEvent) => {
@@ -596,7 +602,7 @@ export default function Home() {
     return () => window.removeEventListener("pointerdown", closeMenuOutside);
   }, [openConversationMenuId, openProjectMenuId]);
   useEffect(() => {
-    if (!conversationStorageReady || !activeConversationId || conversationDeleting || conversationRenaming || projectDeleting) return;
+    if (!authenticated || !conversationStorageReady || !activeConversationId || conversationDeleting || conversationRenaming || projectDeleting) return;
     if (skipNextConversationPersistRef.current) {
       skipNextConversationPersistRef.current = false;
       return;
@@ -627,7 +633,7 @@ export default function Home() {
     if (!loading) return;
     const timer = window.setInterval(() => void persist(), 1500);
     return () => window.clearInterval(timer);
-  }, [activeConversationId, conversationDeleting, conversationProjectId, conversationRenaming, conversationStorageReady, loading, projectConversationMode, projectDeleting, projects]);
+  }, [activeConversationId, authenticated, conversationDeleting, conversationProjectId, conversationRenaming, conversationStorageReady, loading, projectConversationMode, projectDeleting, projects]);
 
   function startNewConversation() {
     if (loading) return;
@@ -644,12 +650,13 @@ export default function Home() {
   }
 
   async function startProjectConversation(projectId: string) {
+    if (!authenticated || !userId) { onRequireLogin(); return; }
     if (loading || projectDeleting) return;
     let directory = projectDirectoriesRef.current.get(projectId);
     let stored: StoredProjectDirectory | undefined;
     try {
       if (!directory) {
-        stored = await getStoredProjectDirectory(projectId);
+        stored = await getStoredProjectDirectory(userId, projectId);
         if (!stored) throw new Error("没有找到该项目已保存的目录授权，请点击“打开本地项目”重新选择目录。");
         directory = stored.handle;
       }
@@ -682,6 +689,7 @@ export default function Home() {
   }
 
   async function selectProjectDirectory() {
+    if (!authenticated || !userId) { onRequireLogin(); return; }
     setProjectError("");
     const showPicker = (window as Window & { showDirectoryPicker?: (options: { mode: "readwrite" }) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker;
     if (!window.isSecureContext || !showPicker) {
@@ -692,7 +700,7 @@ export default function Home() {
       const directory = await showPicker.call(window, { mode: "readwrite" });
       for (const [id, existing] of projectDirectoriesRef.current) {
         if (await directory.isSameEntry(existing)) {
-          await saveStoredProjectDirectory({ id, name: projects.find((project) => project.id === id)?.name || directory.name, handle: directory });
+          await saveStoredProjectDirectory(userId, { id, name: projects.find((project) => project.id === id)?.name || directory.name, handle: directory });
           setSelectedProjectId(id);
           setProjectError("");
           return;
@@ -701,7 +709,7 @@ export default function Home() {
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `project-${Date.now()}`;
       const sameNameCount = projects.filter((project) => project.name === directory.name).length;
       const name = sameNameCount ? `${directory.name} (${sameNameCount + 1})` : directory.name;
-      await saveStoredProjectDirectory({ id, name, handle: directory });
+      await saveStoredProjectDirectory(userId, { id, name, handle: directory });
       projectDirectoriesRef.current.set(id, directory);
       setProjects((items) => [...items, { id, name }]);
       setSelectedProjectId(id);
@@ -851,7 +859,8 @@ export default function Home() {
         if (response.ok && data.deleted) deletedIds.push(id);
         else throw new Error(data.error || `删除项目聊天失败：${id}`);
       }
-      await removeStoredProjectDirectory(target.id);
+      if (!userId) throw new Error("请先登录后再管理项目目录。");
+      await removeStoredProjectDirectory(userId, target.id);
       setConversations((items) => items.filter((item) => !deletedIds.includes(item.id)));
       projectDirectoriesRef.current.delete(target.id);
       setProjects((items) => items.filter((project) => project.id !== target.id));
@@ -885,13 +894,14 @@ export default function Home() {
   }
 
   useEffect(() => {
+    if (!authenticated) return;
     fetch("/api/models").then(async (response) => {
       const data = await readApiJson<ModelList>(response);
       if (!response.ok) throw new Error("读取模型配置失败");
       setModels(data.models);
       setSelectedModelId(data.defaultModelId || "");
     }).catch(() => setError("读取模型配置失败。"));
-  }, []);
+  }, [authenticated]);
   useEffect(() => {
     if (providerModelPickerIndex === null) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
@@ -937,6 +947,7 @@ export default function Home() {
   async function submit(question = input) {
     const value = question.trim();
     if ((!value && !pendingImages.length) || loading) return;
+    if (!authenticated) { onRequireLogin(); return; }
     const imagesToSend = pendingImages;
     const requestProjectId = selectedProjectId;
     setConversationProjectId(projectConversationMode ? (requestProjectId || conversationProjectId) : "");
@@ -1296,7 +1307,6 @@ export default function Home() {
 
   const projectConversationGroups = (() => {
     const groups = new Map<string, { id: string; name: string; conversations: Conversation[] }>();
-    for (const project of projects) groups.set(project.id, { id: project.id, name: project.name, conversations: [] });
     for (const conversation of conversations) {
       if (!conversation.projectId) continue;
       const group = groups.get(conversation.projectId) || { id: conversation.projectId, name: conversation.projectName || "项目", conversations: [] };
@@ -1312,7 +1322,7 @@ export default function Home() {
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><SunIcon /></div><div><strong>Little Sunshine</strong></div></div>
       <button className="new-chat" disabled={loading} onClick={startNewConversation}><svg className="new-chat-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg><span>开启新会话</span></button>
-      <button type="button" className="new-project" disabled={loading || !projectDirectoryStorageReady} onClick={() => void selectProjectDirectory()}><FolderOpen aria-hidden="true" /><span>打开本地项目</span></button>
+      <button type="button" className="new-project" disabled={loading || !projectDirectoryStorageReady} onClick={() => void selectProjectDirectory()}><FolderOpen aria-hidden="true" /><span>打开本地项目(本地文件夹)</span></button>
       {projectConversationGroups.length > 0 && <div className="project-list"><div className="project-list-heading">项目</div>{projectConversationGroups.map((group) => <div className="project-chat-group" key={group.id}><div className="project-list-row"><div className="project-list-select" title={group.name}><FolderPlus aria-hidden="true" /><span>{group.name}</span></div><ProjectMenuButton projectName={group.name} open={openProjectMenuId === group.id} disabled={loading || projectDeleting || conversationDeleting || conversationRenaming} onToggle={() => { setOpenConversationMenuId(""); setOpenProjectMenuId(openProjectMenuId === group.id ? "" : group.id); }} onDelete={() => requestDeleteProject(group)} /><button type="button" className="project-new-chat" aria-label={`在项目 ${group.name} 下新建会话`} title="在此项目下新建会话" disabled={loading || projectDeleting} onClick={() => startProjectConversation(group.id)}><Plus aria-hidden="true" /></button></div>{sortConversations(group.conversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming || projectDeleting} menuOpen={openConversationMenuId === conversation.id} className="project-conversation-item" onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />)}</div>)}</div>}
       {projectError && <div className="project-error" role="alert">{projectError}</div>}
       <div className="conversation-history">
@@ -1320,12 +1330,12 @@ export default function Home() {
         {recentConversations.length ? sortConversations(recentConversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming} menuOpen={openConversationMenuId === conversation.id} onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />) : <div className="conversation-history-empty">暂无会话</div>}
       </div>
       <div className="sidebar-bottom">
-        <div className="user-chip"><div><strong>数据分析员</strong><small>只读访问</small></div><span className="more">···</span></div>
+        {authenticated ? <div className="sidebar-account"><div className="user-chip"><span className="avatar">{username?.slice(0, 1).toUpperCase() || "U"}</span><div className="sidebar-account-name"><strong>{username || "已登录用户"}</strong><small>已登录</small></div><button type="button" className="sidebar-account-more" aria-label="账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /></button></div>{userMenuOpen && <div className="sidebar-account-menu">{unboundProviders.map((provider) => <button type="button" className="sidebar-account-bind" key={provider.id} onClick={() => { window.location.href = `/api/auth/oauth/${encodeURIComponent(provider.id)}`; }}>{`绑定${provider.name}`}</button>)}<button type="button" className="sidebar-account-logout" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut aria-hidden="true" />退出登录</button></div>}</div> : <button type="button" className="guest-sidebar-login" onClick={onRequireLogin}>登录</button>}
       </div>
     </aside>
 
     <section className="main-area">
-      <button type="button" className="mcp-tools-button" onClick={() => void openMcpTools()}><span>☷</span> MCP 工具</button>
+      {authenticated && <button type="button" className="mcp-tools-button" onClick={() => void openMcpTools()}><span>☷</span> MCP 工具</button>}
       <div className={"workspace " + (showWelcome ? "welcome-workspace" : "")}>
         <section className={"conversation-panel " + (showWelcome ? "welcome-panel" : "")}>
           <div className={"chat-content " + (showWelcome ? "welcome-content" : "")}>
@@ -1344,7 +1354,7 @@ export default function Home() {
             {pendingImages.length > 0 && <div className="composer-image-previews">{pendingImages.map((image) => <div className="composer-image-preview" key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" aria-label={`移除图片 ${image.name}`} title="移除图片" onClick={() => setPendingImages((items) => items.filter((item) => item.id !== image.id))}>×</button></div>)}</div>}
             {selectedProject && <div className="project-chat-context active"><FolderPlus aria-hidden="true" /><span>项目</span><span className="project-context-value">{selectedProject.name}</span><small>本轮可访问此项目</small></div>}
             <Textarea className="composer-textarea" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="给 Little Sunshine 发送消息" rows={1} />
-            <div className="composer-tools"><span className="composer-hint">↵ 发送 · Shift + Enter 换行</span><div className="composer-model-tools"><input ref={imageInputRef} className="image-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => { void addImageFiles(event.target.files); event.target.value = ""; }} /><Button type="button" variant="ghost" size="icon" className="attach-image-button" aria-label="上传图片" data-tooltip="上传图片（最多 4 张，每张不超过 4 MB）" disabled={loading || pendingImages.length >= 4} onClick={() => imageInputRef.current?.click()}><Paperclip aria-hidden="true" /></Button><Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}><PopoverTrigger asChild><Button type="button" variant="outline" className="model-select-wrap" aria-label="选择聊天模型" aria-haspopup="dialog" aria-expanded={modelMenuOpen}><span>◈</span><strong>{selectedModel ? selectedModel.name : "未选择模型"}</strong><ArrowDown aria-hidden="true" className="model-trigger-chevron" /></Button></PopoverTrigger>{modelMenuOpen && <PopoverContent side="top" align="start" sideOffset={8} className="model-dropdown" role="menu" aria-label="选择模型"><div className="model-dropdown-heading"><span>选择模型</span><Button type="button" variant="ghost" size="sm" className="model-dropdown-add" role="menuitem" onClick={() => { setModelMenuOpen(false); openModelModal(); }}><Plus aria-hidden="true" />添加自定义模型</Button></div>{Object.entries(modelGroups).map(([vendor, vendorModels]) => <div className="model-dropdown-group" key={vendor}><div className="model-dropdown-group-heading">{modelVendorLabel(vendor)}</div>{vendorModels.map((model) => <div className={`model-dropdown-row ${selectedModelId === model.id ? "selected" : ""}`} key={model.id}><Button type="button" variant="ghost" className="model-option-main" role="menuitemradio" aria-checked={selectedModelId === model.id} onClick={() => void chooseModel(model.id)}><span><strong>{model.name}</strong><small>{model.model} · {model.protocol.toUpperCase()}</small></span></Button><div className="model-option-actions"><Button type="button" variant="ghost" size="icon" className="model-action-button" title={`编辑 ${model.name}`} aria-label={`编辑 ${model.name}`} onClick={() => openModelModal(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></Button><Button type="button" variant="ghost" size="icon" className="model-action-button delete" title={`删除 ${model.name}`} aria-label={`删除 ${model.name}`} onClick={() => void deleteModel(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></Button></div></div>)}</div>)}</PopoverContent>}</Popover><Button type="submit" variant="default" size="icon" className="composer-send-button" disabled={(!input.trim() && pendingImages.length === 0) || loading} aria-label="发送"><ArrowUp aria-hidden="true" /></Button></div></div>
+            <div className="composer-tools"><span className="composer-hint">↵ 发送 · Shift + Enter 换行</span><div className="composer-model-tools"><input ref={imageInputRef} className="image-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={!authenticated} onChange={(event) => { void addImageFiles(event.target.files); event.target.value = ""; }} /><Button type="button" variant="ghost" size="icon" className="attach-image-button" aria-label="上传图片" data-tooltip="上传图片（最多 4 张，每张不超过 4 MB）" disabled={!authenticated || loading || pendingImages.length >= 4} onClick={() => imageInputRef.current?.click()}><Paperclip aria-hidden="true" /></Button><Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}><PopoverTrigger asChild><Button type="button" variant="outline" className="model-select-wrap" aria-label="选择聊天模型" aria-haspopup="dialog" aria-expanded={modelMenuOpen} disabled={!authenticated}><span>◈</span><strong>{selectedModel ? selectedModel.name : "未选择模型"}</strong><ArrowDown aria-hidden="true" className="model-trigger-chevron" /></Button></PopoverTrigger>{modelMenuOpen && <PopoverContent side="top" align="start" sideOffset={8} className="model-dropdown" role="menu" aria-label="选择模型"><div className="model-dropdown-heading"><span>选择模型</span><Button type="button" variant="ghost" size="sm" className="model-dropdown-add" role="menuitem" onClick={() => { setModelMenuOpen(false); openModelModal(); }}><Plus aria-hidden="true" />添加自定义模型</Button></div>{Object.entries(modelGroups).map(([vendor, vendorModels]) => <div className="model-dropdown-group" key={vendor}><div className="model-dropdown-group-heading">{modelVendorLabel(vendor)}</div>{vendorModels.map((model) => <div className={`model-dropdown-row ${selectedModelId === model.id ? "selected" : ""}`} key={model.id}><Button type="button" variant="ghost" className="model-option-main" role="menuitemradio" aria-checked={selectedModelId === model.id} onClick={() => void chooseModel(model.id)}><span><strong>{model.name}</strong><small>{model.model} · {model.protocol.toUpperCase()}</small></span></Button><div className="model-option-actions"><Button type="button" variant="ghost" size="icon" className="model-action-button" title={`编辑 ${model.name}`} aria-label={`编辑 ${model.name}`} onClick={() => openModelModal(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></Button><Button type="button" variant="ghost" size="icon" className="model-action-button delete" title={`删除 ${model.name}`} aria-label={`删除 ${model.name}`} onClick={() => void deleteModel(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></Button></div></div>)}</div>)}</PopoverContent>}</Popover><Button type="submit" variant="default" size="icon" className="composer-send-button" disabled={(!input.trim() && pendingImages.length === 0) || loading} aria-label="发送"><ArrowUp aria-hidden="true" /></Button></div></div>
           </form>{error && <div className="error-banner">{error}<button onClick={() => setError("")}>×</button></div>}</div>
         </section>
 
@@ -1489,6 +1499,111 @@ export default function Home() {
       </DialogContent>
     </Dialog>
   </main>;
+}
+
+export default function Home() {
+  type AuthProvider = { id: string; name: string };
+  type AuthUser = { id: number; username: string; local?: boolean; identities: Array<{ provider: string; providerUsername: string }> };
+  const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
+  const [providers, setProviders] = useState<AuthProvider[]>([]);
+  const [authError, setAuthError] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/me").then(async (response) => {
+      const data = await response.json() as { user?: AuthUser | null; providers?: AuthProvider[] };
+      if (!response.ok) throw new Error("无法连接后端服务。");
+      if (!cancelled) setUser(data.user);
+      if (!cancelled) setProviders(data.providers || []);
+    }).catch((error) => { if (!cancelled) setAuthError(error instanceof Error ? error.message : "读取登录状态失败。"); });
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("auth") === "provider-unlinked") { setAuthMessage("该第三方账号尚未绑定用户。请先注册或登录，然后在登录后的账号栏绑定第三方账号。"); setAuthMode("register"); setShowAuthModal(true); }
+    else if (query.get("auth") === "provider-bound") setAuthMessage("第三方账号绑定成功。");
+    else if (query.get("auth") === "cancelled") setAuthMessage("第三方登录已取消。");
+    else if (query.get("auth") === "bind-failed") setAuthMessage(query.get("message") || "第三方账号绑定失败。");
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const onOAuthPopupMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || !event.data || typeof event.data !== "object" || event.data.type !== "little-sunshine-oauth") return;
+      const result = event.data as { auth?: string; message?: string; provider?: string };
+      if (result.auth === "provider-unlinked") {
+        setUser(null);
+        const providerName = providers.find((provider) => provider.id === result.provider)?.name || result.provider || "第三方平台";
+        setAuthMessage(`该 ${providerName} 账号尚未绑定用户。请先注册或登录，然后在登录后的账户菜单中绑定第三方账号。`);
+        setAuthMode("register");
+        setShowAuthModal(true);
+      } else if (result.auth === "cancelled" || result.auth === "bind-failed") {
+        setAuthMessage(result.message || (result.auth === "cancelled" ? "第三方授权已取消。" : "第三方账号绑定失败。"));
+        setShowAuthModal(true);
+      } else if (result.auth === "success" || result.auth === "provider-bound") {
+        void fetch("/api/auth/me").then(async (response) => {
+          const data = await response.json() as { user?: AuthUser | null; providers?: AuthProvider[] };
+          if (!response.ok) throw new Error("无法读取授权后的登录状态。");
+          setUser(data.user ?? null);
+          setProviders(data.providers || []);
+          setShowAuthModal(false);
+          setAuthError("");
+        }).catch((error) => setAuthError(error instanceof Error ? error.message : "读取登录状态失败。"));
+      }
+    };
+    window.addEventListener("message", onOAuthPopupMessage);
+    return () => window.removeEventListener("message", onOAuthPopupMessage);
+  }, []);
+
+  const openAuth = (mode: "login" | "register") => { setAuthMode(mode); setAuthError(""); setShowAuthModal(true); };
+  const defaultOAuthProviders: AuthProvider[] = [
+    { id: "github", name: "GitHub" },
+    { id: "gitee", name: "Gitee" },
+    { id: "google", name: "Google" },
+  ];
+  const oauthButtons = [
+    ...defaultOAuthProviders.map((provider) => providers.find((configured) => configured.id === provider.id) || provider),
+    ...providers.filter((provider) => !defaultOAuthProviders.some((builtIn) => builtIn.id === provider.id)),
+  ];
+  const openOAuthPopup = (provider: AuthProvider) => {
+    setAuthError("");
+    if (!providers.some((configured) => configured.id === provider.id)) {
+      setAuthError(`后端尚未配置 ${provider.name} 登录，请在 auth.json 中填写对应平台的 clientId 和 clientSecret。`);
+      return;
+    }
+    const width = 600;
+    const height = 720;
+    const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
+    const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
+    const popup = window.open(`/api/auth/oauth/${encodeURIComponent(provider.id)}?popup=1`, "little-sunshine-oauth", `popup=yes,width=${width},height=${height},left=${left},top=${top}`);
+    if (!popup) setAuthError("浏览器拦截了授权弹窗，请允许此网站打开弹出窗口后重试。");
+  };
+  return <>
+    {!user && <div className="guest-auth-bar"><button type="button" className="primary" onClick={() => openAuth("login")}>登录/注册</button></div>}
+    <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} unboundProviders={user ? providers.filter((provider) => !user.identities.some((identity) => identity.provider === provider.id)) : []} onRequireLogin={() => openAuth("login")} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); window.location.reload(); }} />
+    {showAuthModal && !user && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAuthModal(false); }}><section className="auth-card auth-modal-card" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title"><button type="button" className="auth-modal-close" aria-label="关闭" onClick={() => setShowAuthModal(false)}>×</button><div className="auth-sun">☀</div><h1 id="auth-modal-title">Little Sunshine</h1><p>{authMode === "login" ? "登录你的 Little Sunshine 账号" : "创建 Little Sunshine 账号"}</p>
+    {authMessage && <div className="auth-message">{authMessage}</div>}{authError && user === undefined && <button type="button" className="auth-secondary-button" onClick={() => window.location.reload()}>重新连接</button>}
+      <form className="auth-form" onSubmit={async (event) => {
+        event.preventDefault(); setAuthError(""); setAuthLoading(true);
+        try {
+          const response = await fetch(`/api/auth/${authMode}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
+          const data = await response.json() as { error?: string };
+          if (!response.ok) throw new Error(data.error || (authMode === "register" ? "注册失败。" : "登录失败。"));
+          window.location.reload();
+        } catch (error) { setAuthError(error instanceof Error ? error.message : "请求失败，请稍后重试。"); }
+        finally { setAuthLoading(false); }
+      }}>
+        <Input required autoComplete="username" minLength={3} maxLength={32} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="用户名" />
+        <Input required type="password" autoComplete={authMode === "register" ? "new-password" : "current-password"} minLength={8} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码（至少 8 位）" />
+        {authError && <div className="auth-error" role="alert">{authError}</div>}
+        <button type="submit" className="github-login-button" disabled={authLoading}>{authLoading ? "处理中…" : authMode === "register" ? "注册并登录" : "登录"}</button>
+      </form>
+      <div className="auth-providers"><div className="auth-provider-divider"><span>或使用第三方账号</span></div><div className="auth-provider-icons">{oauthButtons.map((provider) => <button key={provider.id} type="button" className="auth-provider-icon-button" aria-label={`使用 ${provider.name} 授权`} onClick={() => openOAuthPopup(provider)}><span className="auth-provider-tooltip" aria-hidden="true">{provider.name}</span>{provider.id === "github" ? <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.54v-2.08c-3.1.68-3.75-1.32-3.75-1.32-.5-1.3-1.23-1.65-1.23-1.65-1.01-.69.08-.68.08-.68 1.12.08 1.7 1.15 1.7 1.15.99 1.69 2.6 1.2 3.23.92.1-.72.39-1.2.7-1.48-2.48-.28-5.09-1.24-5.09-5.51 0-1.22.44-2.21 1.15-2.99-.12-.28-.5-1.42.11-2.95 0 0 .94-.3 3.05 1.14a10.6 10.6 0 0 1 5.55 0c2.11-1.44 3.04-1.14 3.04-1.14.61 1.53.23 2.67.12 2.95.71.78 1.14 1.77 1.14 2.99 0 4.28-2.61 5.22-5.1 5.5.4.34.75 1.02.75 2.06v3.09c0 .3.2.65.76.54A11.1 11.1 0 0 0 12 .9Z" /></svg> : provider.id === "gitee" ? <span className="gitee-provider-mark">G</span> : provider.id === "google" ? <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.7c3.9-3.6 6-8.8 6-15Z"/><path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.8l-6.7-5.1c-1.8 1.2-4 1.9-6.8 1.9-5.2 0-9.6-3.5-11.2-8.2H5.9v5.2C9.3 39.6 16.1 44 24 44Z"/><path fill="#FBBC05" d="M12.8 27.8a12 12 0 0 1 0-7.6V15H5.9a20 20 0 0 0 0 18l6.9-5.2Z"/><path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.9-5.9C34.1 6 29.5 4 24 4 16.1 4 9.3 8.4 5.9 15l6.9 5.2c1.6-4.7 6-8.1 11.2-8.1Z"/></svg> : <span>{provider.name.slice(0, 1).toUpperCase()}</span>}</button>)}</div><small>第三方账号仅用于绑定已有用户</small></div>
+      <button type="button" className="auth-mode-button" onClick={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "没有账号？注册" : "已有账号？登录"}</button>
+  </section></div>}
+  </>;
 }
 
 function ChatResultList({ records }: { records: UsageRecord[] }) {

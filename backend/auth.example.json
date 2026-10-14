@@ -1,0 +1,50 @@
+{
+  "appBaseUrl": "https://请替换为你的域名",
+  "jwtSecret": "请填写随机生成的长密钥（至少40个字符）",
+  "providers": {
+    "github": {
+      "clientId": "请填写 GitHub OAuth App 的 Client ID",
+      "clientSecret": "请填写 GitHub OAuth App 的 Client Secret",
+      "authorizationUrl": "https://github.com/login/oauth/authorize",
+      "tokenUrl": "https://github.com/login/oauth/access_token",
+      "userInfoUrl": "https://api.github.com/user",
+      "scope": "read:user",
+      "callbackUrl": "https://请替换为你的域名/api/auth/oauth/github/callback",
+      "tokenRequestFormat": "json",
+      "userIdField": "id",
+      "usernameField": "login",
+      "displayNameField": "name",
+      "avatarField": "avatar_url"
+    },
+    "gitee": {
+      "name": "Gitee",
+      "clientId": "请填写 Gitee 第三方应用的 Client ID",
+      "clientSecret": "请填写 Gitee 第三方应用的 Client Secret",
+      "authorizationUrl": "https://gitee.com/oauth/authorize",
+      "tokenUrl": "https://gitee.com/oauth/token",
+      "userInfoUrl": "https://gitee.com/api/v5/user",
+      "scope": "user_info",
+      "callbackUrl": "https://请替换为你的域名/api/auth/oauth/gitee/callback",
+      "tokenRequestFormat": "form",
+      "tokenGrantType": "authorization_code",
+      "userIdField": "id",
+      "usernameField": "login",
+      "displayNameField": "name",
+      "avatarField": "avatar_url"
+    },
+    "google": {
+      "clientId": "请填写 Google OAuth 客户端 ID",
+      "clientSecret": "请填写 Google OAuth 客户端密钥",
+      "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+      "tokenUrl": "https://oauth2.googleapis.com/token",
+      "userInfoUrl": "https://openidconnect.googleapis.com/v1/userinfo",
+      "scope": "openid profile email",
+      "callbackUrl": "https://请替换为你的域名/api/auth/oauth/google/callback",
+      "tokenRequestFormat": "form",
+      "userIdField": "sub",
+      "usernameField": "email",
+      "displayNameField": "name",
+      "avatarField": "picture"
+    }
+  }
+}

@@ -3,12 +3,14 @@ import mysql, { type Pool } from "mysql2/promise";
 import fs from "node:fs";
 import { chmod, readFile, rename } from "node:fs/promises";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 export type StoredMessage = { role: "assistant" | "user"; content: string; error?: boolean; result?: unknown };
 export type StoredConversation = { id: string; title: string; updatedAt: number; pinned: boolean; projectId?: string; projectName?: string; messages: StoredMessage[] };
 
-// Placeholder until authenticated sessions provide a real user ID.
-const CURRENT_USER_ID = 1;
+const userContext = new AsyncLocalStorage<number>();
+export function withUserContext<T>(userId: number, callback: () => T): T { return userContext.run(userId, callback); }
+function currentUserId() { const userId = userContext.getStore(); if (!userId) throw new Error("需要登录后才能访问用户数据。"); return userId; }
 
 declare global {
   // eslint-disable-next-line no-var
@@ -52,7 +54,7 @@ function ensureModelConfigColumns(database: DatabaseSync) {
 
 function ensureUserIdColumn(database: DatabaseSync, table: "conversations" | "model_configs" | "external_mcp_servers") {
   const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === "user_id")) database.exec(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1`);
+  if (!columns.some((column) => column.name === "user_id")) database.exec(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER NOT NULL`);
 }
 
 function ensureAppSettingsUserKey(database: DatabaseSync) {
@@ -62,7 +64,7 @@ function ensureAppSettingsUserKey(database: DatabaseSync) {
   try {
     database.exec(`
       CREATE TABLE app_settings_new (
-        user_id INTEGER NOT NULL DEFAULT 1,
+        user_id INTEGER NOT NULL,
         setting_key TEXT NOT NULL,
         setting_value TEXT,
         PRIMARY KEY (user_id, setting_key)
@@ -100,6 +102,19 @@ function getDatabase() {
     ensureModelConfigColumns(global.dqConversationDb);
     ensureExternalMcpColumns(global.dqConversationDb);
     ensureConversationProjectColumns(global.dqConversationDb);
+    global.dqConversationDb.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1,
+        token_version INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS user_identities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL, provider_user_id TEXT NOT NULL, provider_username TEXT NOT NULL DEFAULT '',
+        provider_display_name TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+        UNIQUE (provider, provider_user_id), UNIQUE (user_id, provider)
+      );
+    `);
     return global.dqConversationDb;
   }
   {
@@ -111,7 +126,7 @@ function getDatabase() {
     database.exec(`
       CREATE TABLE IF NOT EXISTS conversations (
         id TEXT PRIMARY KEY,
-        user_id INTEGER NOT NULL DEFAULT 1,
+        user_id INTEGER NOT NULL,
         title TEXT NOT NULL,
         updated_at INTEGER NOT NULL,
         project_id TEXT,
@@ -130,7 +145,7 @@ function getDatabase() {
       );
       CREATE TABLE IF NOT EXISTS model_configs (
         id TEXT PRIMARY KEY,
-        user_id INTEGER NOT NULL DEFAULT 1,
+        user_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         protocol TEXT NOT NULL,
         base_url TEXT NOT NULL,
@@ -142,14 +157,14 @@ function getDatabase() {
         sort_order INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS app_settings (
-        user_id INTEGER NOT NULL DEFAULT 1,
+        user_id INTEGER NOT NULL,
         setting_key TEXT NOT NULL,
         setting_value TEXT,
         PRIMARY KEY (user_id, setting_key)
       );
       CREATE TABLE IF NOT EXISTS external_mcp_servers (
         id TEXT PRIMARY KEY,
-        user_id INTEGER NOT NULL DEFAULT 1,
+        user_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         url TEXT NOT NULL,
         token TEXT NOT NULL,
@@ -159,6 +174,27 @@ function getDatabase() {
       CREATE TABLE IF NOT EXISTS app_metadata (
         metadata_key TEXT PRIMARY KEY,
         metadata_value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        password_hash TEXT NOT NULL,
+        password_salt TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        token_version INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS user_identities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        provider_user_id TEXT NOT NULL,
+        provider_username TEXT NOT NULL DEFAULT '',
+        provider_display_name TEXT NOT NULL DEFAULT '',
+        avatar_url TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        UNIQUE (provider, provider_user_id),
+        UNIQUE (user_id, provider)
       );
     `);
     ensureUserIdColumn(database, "conversations");
@@ -194,12 +230,14 @@ async function getMysqlPool() {
   global.dqMysqlPool = pool;
   global.dqMysqlSchemaReady ||= (async () => {
     const statements = [
-      `CREATE TABLE IF NOT EXISTS conversations (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL DEFAULT 1, title TEXT NOT NULL, updated_at BIGINT NOT NULL, project_id VARCHAR(128) NULL, project_name TEXT NULL, pinned TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS conversations (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, title TEXT NOT NULL, updated_at BIGINT NOT NULL, project_id VARCHAR(128) NULL, project_name TEXT NULL, pinned TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS conversation_messages (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, conversation_id VARCHAR(128) NOT NULL, message_index INT NOT NULL, role VARCHAR(32) NOT NULL, content LONGTEXT NOT NULL, is_error TINYINT NOT NULL DEFAULT 0, result_json LONGTEXT NULL, UNIQUE KEY conversation_message_order (conversation_id, message_index), CONSTRAINT conversation_messages_fk FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-      `CREATE TABLE IF NOT EXISTS model_configs (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL DEFAULT 1, name VARCHAR(255) NOT NULL, protocol VARCHAR(32) NOT NULL, base_url TEXT NOT NULL, full_address TINYINT NOT NULL, model TEXT NOT NULL, api_key TEXT NOT NULL, vendor VARCHAR(128) NOT NULL DEFAULT 'custom', models_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-      `CREATE TABLE IF NOT EXISTS app_settings (user_id BIGINT NOT NULL DEFAULT 1, setting_key VARCHAR(128) NOT NULL, setting_value TEXT NULL, PRIMARY KEY (user_id, setting_key)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-      `CREATE TABLE IF NOT EXISTS external_mcp_servers (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL DEFAULT 1, name VARCHAR(255) NOT NULL, url TEXT NOT NULL, token TEXT NOT NULL, enabled TINYINT NOT NULL, disabled_tools_json LONGTEXT NOT NULL, allowed_tools_json LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS model_configs (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(255) NOT NULL, protocol VARCHAR(32) NOT NULL, base_url TEXT NOT NULL, full_address TINYINT NOT NULL, model TEXT NOT NULL, api_key TEXT NOT NULL, vendor VARCHAR(128) NOT NULL DEFAULT 'custom', models_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS app_settings (user_id BIGINT NOT NULL, setting_key VARCHAR(128) NOT NULL, setting_value TEXT NULL, PRIMARY KEY (user_id, setting_key)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS external_mcp_servers (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(255) NOT NULL, url TEXT NOT NULL, token TEXT NOT NULL, enabled TINYINT NOT NULL, disabled_tools_json LONGTEXT NOT NULL, allowed_tools_json LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS app_metadata (metadata_key VARCHAR(128) PRIMARY KEY, metadata_value TEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS users (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, username VARCHAR(64) NOT NULL UNIQUE, password_hash VARCHAR(256) NOT NULL, password_salt VARCHAR(128) NOT NULL, is_active TINYINT NOT NULL DEFAULT 1, token_version INT NOT NULL DEFAULT 0, created_at BIGINT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS user_identities (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, user_id BIGINT NOT NULL, provider VARCHAR(32) NOT NULL, provider_user_id VARCHAR(128) NOT NULL, provider_username VARCHAR(191) NOT NULL DEFAULT '', provider_display_name VARCHAR(191) NOT NULL DEFAULT '', avatar_url TEXT NOT NULL, created_at BIGINT NOT NULL, UNIQUE KEY identity_provider_user (provider, provider_user_id), UNIQUE KEY identity_user_provider (user_id, provider), CONSTRAINT user_identities_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     ];
     for (const statement of statements) await pool.query(statement);
   })().catch(async (error: unknown) => {
@@ -214,6 +252,131 @@ async function getMysqlPool() {
 
 async function getProvider() {
   return (await readDatabaseConfig()).provider || "sqlite";
+}
+
+export type AppUser = { id: number; username: string; passwordHash: string; passwordSalt: string; isActive: boolean; tokenVersion: number; createdAt: number };
+export type UserIdentity = { provider: string; providerUserId: string; providerUsername: string; providerDisplayName: string; avatarUrl: string; createdAt: number };
+
+function mapUser(row: { id: number | string; username: string; passwordHash: string; passwordSalt: string; isActive: number; tokenVersion: number; createdAt: number | string }): AppUser {
+  return { id: Number(row.id), username: row.username, passwordHash: row.passwordHash, passwordSalt: row.passwordSalt, isActive: Boolean(row.isActive), tokenVersion: Number(row.tokenVersion), createdAt: Number(row.createdAt) };
+}
+
+export async function findUserByUsername(username: string): Promise<AppUser | null> {
+  const sql = "SELECT id, username, password_hash AS passwordHash, password_salt AS passwordSalt, is_active AS isActive, token_version AS tokenVersion, created_at AS createdAt FROM users WHERE username = ? LIMIT 1";
+  if (await getProvider() === "mysql") {
+    const [rows] = await (await getMysqlPool()).execute(sql, [username]);
+    const row = (rows as Array<Parameters<typeof mapUser>[0]>)[0];
+    return row ? mapUser(row) : null;
+  }
+  const row = getDatabase().prepare(sql).get(username) as Parameters<typeof mapUser>[0] | undefined;
+  return row ? mapUser(row) : null;
+}
+
+export async function findUserById(id: number): Promise<AppUser | null> {
+  const sql = "SELECT id, username, password_hash AS passwordHash, password_salt AS passwordSalt, is_active AS isActive, token_version AS tokenVersion, created_at AS createdAt FROM users WHERE id = ? LIMIT 1";
+  if (await getProvider() === "mysql") {
+    const [rows] = await (await getMysqlPool()).execute(sql, [id]);
+    const row = (rows as Array<Parameters<typeof mapUser>[0]>)[0];
+    return row ? mapUser(row) : null;
+  }
+  const row = getDatabase().prepare(sql).get(id) as Parameters<typeof mapUser>[0] | undefined;
+  return row ? mapUser(row) : null;
+}
+
+export async function findUserByIdentity(provider: string, providerUserId: string) {
+  const sql = "SELECT u.id, u.username, u.password_hash AS passwordHash, u.password_salt AS passwordSalt, u.is_active AS isActive, u.token_version AS tokenVersion, u.created_at AS createdAt FROM users u JOIN user_identities i ON i.user_id = u.id WHERE i.provider = ? AND i.provider_user_id = ? LIMIT 1";
+  if (await getProvider() === "mysql") {
+    const [rows] = await (await getMysqlPool()).execute(sql, [provider, providerUserId]);
+    const row = (rows as Array<Parameters<typeof mapUser>[0]>)[0];
+    return row ? mapUser(row) : null;
+  }
+  const row = getDatabase().prepare(sql).get(provider, providerUserId) as Parameters<typeof mapUser>[0] | undefined;
+  return row ? mapUser(row) : null;
+}
+
+export async function listUserIdentities(userId: number): Promise<UserIdentity[]> {
+  const sql = "SELECT provider, provider_user_id AS providerUserId, provider_username AS providerUsername, provider_display_name AS providerDisplayName, avatar_url AS avatarUrl, created_at AS createdAt FROM user_identities WHERE user_id = ? ORDER BY provider";
+  if (await getProvider() === "mysql") {
+    const [rows] = await (await getMysqlPool()).execute(sql, [userId]);
+    return (rows as Array<UserIdentity & { createdAt: number | string }>).map((row) => ({ ...row, createdAt: Number(row.createdAt) }));
+  }
+  return getDatabase().prepare(sql).all(userId) as UserIdentity[];
+}
+
+async function movePreviouslyClaimedGithubData(userId: number, readOwner: () => Promise<string | undefined>, execute: (sql: string, values?: Array<string | number>) => Promise<void>) {
+  const oldOwner = Number(await readOwner());
+  if (!Number.isSafeInteger(oldOwner) || oldOwner <= 1 || oldOwner === userId) return;
+  for (const table of ["conversations", "model_configs", "external_mcp_servers", "app_settings"]) await execute(`UPDATE ${table} SET user_id = ? WHERE user_id = ?`, [userId, oldOwner]);
+  await execute("UPDATE app_metadata SET metadata_value = 'migrated' WHERE metadata_key = 'github_legacy_data_claimed'");
+}
+
+export async function createLocalUser(username: string, passwordHash: string, passwordSalt: string): Promise<AppUser> {
+  const createdAt = Date.now();
+  if (await getProvider() === "mysql") {
+    const pool = await getMysqlPool();
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [result] = await connection.execute("INSERT INTO users (username, password_hash, password_salt, created_at) VALUES (?, ?, ?, ?)", [username, passwordHash, passwordSalt, createdAt]);
+      const id = Number((result as { insertId: number | string }).insertId);
+      await movePreviouslyClaimedGithubData(id, async () => {
+        const [rows] = await connection.execute("SELECT metadata_value FROM app_metadata WHERE metadata_key = 'github_legacy_data_claimed' FOR UPDATE");
+        return (rows as Array<{ metadata_value: string }>)[0]?.metadata_value;
+      }, async (sql, values = []) => { await connection.execute(sql, values); });
+      await connection.commit();
+      return { id, username, passwordHash, passwordSalt, isActive: true, tokenVersion: 0, createdAt };
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+  }
+  const database = getDatabase();
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const result = database.prepare("INSERT INTO users (username, password_hash, password_salt, created_at) VALUES (?, ?, ?, ?)").run(username, passwordHash, passwordSalt, createdAt);
+    const id = Number(result.lastInsertRowid);
+    const oldOwner = Number((database.prepare("SELECT metadata_value FROM app_metadata WHERE metadata_key = 'github_legacy_data_claimed'").get() as { metadata_value?: string } | undefined)?.metadata_value);
+    if (Number.isSafeInteger(oldOwner) && oldOwner > 1 && oldOwner !== id) {
+      for (const table of ["conversations", "model_configs", "external_mcp_servers", "app_settings"]) database.prepare(`UPDATE ${table} SET user_id = ? WHERE user_id = ?`).run(id, oldOwner);
+      database.prepare("UPDATE app_metadata SET metadata_value = 'migrated' WHERE metadata_key = 'github_legacy_data_claimed'").run();
+    }
+    database.exec("COMMIT");
+    return { id, username, passwordHash, passwordSalt, isActive: true, tokenVersion: 0, createdAt };
+  } catch (error) { database.exec("ROLLBACK"); throw error; }
+}
+
+export async function bindUserIdentity(userId: number, identity: UserIdentity) {
+  if (await getProvider() === "mysql") {
+    const pool = await getMysqlPool();
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [ownerRows] = await connection.execute("SELECT user_id FROM user_identities WHERE provider = ? AND provider_user_id = ? FOR UPDATE", [identity.provider, identity.providerUserId]);
+      const owner = (ownerRows as Array<{ user_id: number | string }>)[0];
+      if (owner && Number(owner.user_id) !== userId) throw new Error("该第三方账号已绑定到其他用户。");
+      const [userRows] = await connection.execute("SELECT id, provider_user_id FROM user_identities WHERE user_id = ? AND provider = ? FOR UPDATE", [userId, identity.provider]);
+      const prior = (userRows as Array<{ id: number; provider_user_id: string }>)[0];
+      if (prior) {
+        if (prior.provider_user_id !== identity.providerUserId) throw new Error("该用户已绑定此平台的其他账号。");
+        await connection.execute("UPDATE user_identities SET provider_username = ?, provider_display_name = ?, avatar_url = ? WHERE id = ?", [identity.providerUsername, identity.providerDisplayName, identity.avatarUrl, prior.id]);
+      }
+      else await connection.execute("INSERT INTO user_identities (user_id, provider, provider_user_id, provider_username, provider_display_name, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [userId, identity.provider, identity.providerUserId, identity.providerUsername, identity.providerDisplayName, identity.avatarUrl, identity.createdAt]);
+      await connection.commit();
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+    return;
+  }
+  const database = getDatabase();
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const owner = database.prepare("SELECT user_id FROM user_identities WHERE provider = ? AND provider_user_id = ?").get(identity.provider, identity.providerUserId) as { user_id: number } | undefined;
+    if (owner && Number(owner.user_id) !== userId) throw new Error("该第三方账号已绑定到其他用户。");
+    const prior = database.prepare("SELECT id, provider_user_id FROM user_identities WHERE user_id = ? AND provider = ?").get(userId, identity.provider) as { id: number; provider_user_id: string } | undefined;
+    if (prior) {
+      if (prior.provider_user_id !== identity.providerUserId) throw new Error("该用户已绑定此平台的其他账号。");
+      database.prepare("UPDATE user_identities SET provider_username = ?, provider_display_name = ?, avatar_url = ? WHERE id = ?").run(identity.providerUsername, identity.providerDisplayName, identity.avatarUrl, prior.id);
+    }
+    else database.prepare("INSERT INTO user_identities (user_id, provider, provider_user_id, provider_username, provider_display_name, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(userId, identity.provider, identity.providerUserId, identity.providerUsername, identity.providerDisplayName, identity.avatarUrl, identity.createdAt);
+    database.exec("COMMIT");
+  } catch (error) { database.exec("ROLLBACK"); throw error; }
 }
 
 type LegacyModel = { id: string; name: string; protocol: string; baseUrl: string; fullAddress?: boolean; model: string; apiKey: string };
@@ -248,16 +411,16 @@ export async function migrateLegacyConfigs() {
             if (!item || typeof item.id !== "string" || typeof item.name !== "string" || typeof item.baseUrl !== "string" || typeof item.model !== "string") continue;
             const protocol = item.protocol === "messages" || item.protocol === "responses" ? item.protocol : "chat";
             const inferredFullAddress = protocol === "messages" ? /\/messages$/i.test(item.baseUrl) : protocol === "responses" ? /\/responses$/i.test(item.baseUrl) : /\/chat\/completions$/i.test(item.baseUrl);
-            await connection.execute("INSERT IGNORE INTO model_configs (id, user_id, name, protocol, base_url, full_address, model, api_key, vendor, models_url, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'custom', '', ?)", [item.id, CURRENT_USER_ID, item.name, protocol, item.baseUrl, item.fullAddress === undefined ? (inferredFullAddress ? 1 : 0) : item.fullAddress ? 1 : 0, item.model, typeof item.apiKey === "string" ? item.apiKey : "", index]);
+            await connection.execute("INSERT IGNORE INTO model_configs (id, user_id, name, protocol, base_url, full_address, model, api_key, vendor, models_url, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'custom', '', ?)", [item.id, currentUserId(), item.name, protocol, item.baseUrl, item.fullAddress === undefined ? (inferredFullAddress ? 1 : 0) : item.fullAddress ? 1 : 0, item.model, typeof item.apiKey === "string" ? item.apiKey : "", index]);
           }
           const defaultId = typeof models?.defaultModelId === "string" ? models.defaultModelId : null;
-          await connection.execute("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [CURRENT_USER_ID, defaultId]);
+          await connection.execute("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [currentUserId(), defaultId]);
           await connection.execute("INSERT IGNORE INTO app_metadata (metadata_key, metadata_value) VALUES ('models_json_v1', 'done')");
         }
         if (!migrated.has("external_mcp_json_v1")) {
           for (const item of (Array.isArray(external?.servers) ? external.servers : [])) {
             if (!item || typeof item.id !== "string" || typeof item.name !== "string" || typeof item.url !== "string") continue;
-            await connection.execute("INSERT IGNORE INTO external_mcp_servers (id, user_id, name, url, token, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [item.id, CURRENT_USER_ID, item.name, item.url, typeof item.token === "string" ? item.token : "", item.enabled === false ? 0 : 1, JSON.stringify(Array.isArray(item.disabledTools) ? item.disabledTools.filter((name): name is string => typeof name === "string") : []), JSON.stringify(Array.isArray(item.allowedTools) ? item.allowedTools.filter((name): name is string => typeof name === "string") : [])]);
+            await connection.execute("INSERT IGNORE INTO external_mcp_servers (id, user_id, name, url, token, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [item.id, currentUserId(), item.name, item.url, typeof item.token === "string" ? item.token : "", item.enabled === false ? 0 : 1, JSON.stringify(Array.isArray(item.disabledTools) ? item.disabledTools.filter((name): name is string => typeof name === "string") : []), JSON.stringify(Array.isArray(item.allowedTools) ? item.allowedTools.filter((name): name is string => typeof name === "string") : [])]);
           }
           await connection.execute("INSERT IGNORE INTO app_metadata (metadata_key, metadata_value) VALUES ('external_mcp_json_v1', 'done')");
         }
@@ -288,17 +451,17 @@ export async function migrateLegacyConfigs() {
           if (!item || typeof item.id !== "string" || typeof item.name !== "string" || typeof item.baseUrl !== "string" || typeof item.model !== "string") continue;
           const protocol = item.protocol === "messages" || item.protocol === "responses" ? item.protocol : "chat";
           const inferredFullAddress = protocol === "messages" ? /\/messages$/i.test(item.baseUrl) : protocol === "responses" ? /\/responses$/i.test(item.baseUrl) : /\/chat\/completions$/i.test(item.baseUrl);
-          insertModel.run(item.id, CURRENT_USER_ID, item.name, protocol, item.baseUrl, item.fullAddress === undefined ? (inferredFullAddress ? 1 : 0) : item.fullAddress ? 1 : 0, item.model, typeof item.apiKey === "string" ? item.apiKey : "", index);
+          insertModel.run(item.id, currentUserId(), item.name, protocol, item.baseUrl, item.fullAddress === undefined ? (inferredFullAddress ? 1 : 0) : item.fullAddress ? 1 : 0, item.model, typeof item.apiKey === "string" ? item.apiKey : "", index);
         }
         const defaultId = typeof models?.defaultModelId === "string" ? models.defaultModelId : null;
-        database.prepare("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON CONFLICT(user_id, setting_key) DO UPDATE SET setting_value = excluded.setting_value").run(CURRENT_USER_ID, defaultId);
+        database.prepare("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON CONFLICT(user_id, setting_key) DO UPDATE SET setting_value = excluded.setting_value").run(currentUserId(), defaultId);
         database.prepare("INSERT INTO app_metadata (metadata_key, metadata_value) VALUES ('models_json_v1', 'done')").run();
       }
       if (!migrated.get("external_mcp_json_v1")) {
         const insertServer = database.prepare("INSERT OR IGNORE INTO external_mcp_servers (id, user_id, name, url, token, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         for (const item of (Array.isArray(external?.servers) ? external.servers : [])) {
           if (!item || typeof item.id !== "string" || typeof item.name !== "string" || typeof item.url !== "string") continue;
-          insertServer.run(item.id, CURRENT_USER_ID, item.name, item.url, typeof item.token === "string" ? item.token : "", item.enabled === false ? 0 : 1, JSON.stringify(Array.isArray(item.disabledTools) ? item.disabledTools.filter((name): name is string => typeof name === "string") : []), JSON.stringify(Array.isArray(item.allowedTools) ? item.allowedTools.filter((name): name is string => typeof name === "string") : []));
+          insertServer.run(item.id, currentUserId(), item.name, item.url, typeof item.token === "string" ? item.token : "", item.enabled === false ? 0 : 1, JSON.stringify(Array.isArray(item.disabledTools) ? item.disabledTools.filter((name): name is string => typeof name === "string") : []), JSON.stringify(Array.isArray(item.allowedTools) ? item.allowedTools.filter((name): name is string => typeof name === "string") : []));
         }
         database.prepare("INSERT INTO app_metadata (metadata_key, metadata_value) VALUES ('external_mcp_json_v1', 'done')").run();
       }
@@ -326,14 +489,14 @@ export async function migrateLegacyConfigs() {
 export async function readModelConfigStore() {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [rows] = await pool.execute("SELECT id, name, protocol, base_url AS baseUrl, full_address AS fullAddress, model, api_key AS apiKey, vendor, models_url AS modelsUrl FROM model_configs WHERE user_id = ? ORDER BY sort_order, id", [CURRENT_USER_ID]);
-    const [defaultRows] = await pool.execute("SELECT setting_value FROM app_settings WHERE user_id = ? AND setting_key = 'default_model_id'", [CURRENT_USER_ID]);
+    const [rows] = await pool.execute("SELECT id, name, protocol, base_url AS baseUrl, full_address AS fullAddress, model, api_key AS apiKey, vendor, models_url AS modelsUrl FROM model_configs WHERE user_id = ? ORDER BY sort_order, id", [currentUserId()]);
+    const [defaultRows] = await pool.execute("SELECT setting_value FROM app_settings WHERE user_id = ? AND setting_key = 'default_model_id'", [currentUserId()]);
     const defaultRow = (defaultRows as Array<{ setting_value: string | null }>)[0];
     return { models: (rows as Array<{ id: string; name: string; protocol: "chat" | "messages" | "responses"; baseUrl: string; fullAddress: number; model: string; apiKey: string; vendor: string; modelsUrl: string }>).map((row) => ({ ...row, fullAddress: Boolean(row.fullAddress) })), defaultModelId: defaultRow?.setting_value || null };
   }
   const database = getDatabase();
-  const rows = database.prepare("SELECT id, name, protocol, base_url AS baseUrl, full_address AS fullAddress, model, api_key AS apiKey, vendor, models_url AS modelsUrl FROM model_configs WHERE user_id = ? ORDER BY sort_order, rowid").all(CURRENT_USER_ID) as Array<{ id: string; name: string; protocol: "chat" | "messages" | "responses"; baseUrl: string; fullAddress: number; model: string; apiKey: string; vendor: string; modelsUrl: string }>;
-  const defaultRow = database.prepare("SELECT setting_value FROM app_settings WHERE user_id = ? AND setting_key = 'default_model_id'").get(CURRENT_USER_ID) as { setting_value: string | null } | undefined;
+  const rows = database.prepare("SELECT id, name, protocol, base_url AS baseUrl, full_address AS fullAddress, model, api_key AS apiKey, vendor, models_url AS modelsUrl FROM model_configs WHERE user_id = ? ORDER BY sort_order, rowid").all(currentUserId()) as Array<{ id: string; name: string; protocol: "chat" | "messages" | "responses"; baseUrl: string; fullAddress: number; model: string; apiKey: string; vendor: string; modelsUrl: string }>;
+  const defaultRow = database.prepare("SELECT setting_value FROM app_settings WHERE user_id = ? AND setting_key = 'default_model_id'").get(currentUserId()) as { setting_value: string | null } | undefined;
   return { models: rows.map((row) => ({ ...row, fullAddress: Boolean(row.fullAddress) })), defaultModelId: defaultRow?.setting_value || null };
 }
 
@@ -343,11 +506,11 @@ export async function writeModelConfigStore(store: { models: Array<{ id: string;
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-      await connection.execute("DELETE FROM model_configs WHERE user_id = ?", [CURRENT_USER_ID]);
+      await connection.execute("DELETE FROM model_configs WHERE user_id = ?", [currentUserId()]);
       for (const [index, model] of store.models.entries()) {
-        await connection.execute("INSERT INTO model_configs (id, user_id, name, protocol, base_url, full_address, model, api_key, vendor, models_url, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [model.id, CURRENT_USER_ID, model.name, model.protocol, model.baseUrl, model.fullAddress ? 1 : 0, model.model, model.apiKey, model.vendor || "custom", model.modelsUrl || "", index]);
+        await connection.execute("INSERT INTO model_configs (id, user_id, name, protocol, base_url, full_address, model, api_key, vendor, models_url, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [model.id, currentUserId(), model.name, model.protocol, model.baseUrl, model.fullAddress ? 1 : 0, model.model, model.apiKey, model.vendor || "custom", model.modelsUrl || "", index]);
       }
-      await connection.execute("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [CURRENT_USER_ID, store.defaultModelId]);
+      await connection.execute("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [currentUserId(), store.defaultModelId]);
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
@@ -356,10 +519,10 @@ export async function writeModelConfigStore(store: { models: Array<{ id: string;
   const database = getDatabase();
   database.exec("BEGIN IMMEDIATE");
   try {
-    database.prepare("DELETE FROM model_configs WHERE user_id = ?").run(CURRENT_USER_ID);
+    database.prepare("DELETE FROM model_configs WHERE user_id = ?").run(currentUserId());
     const insert = database.prepare("INSERT INTO model_configs (id, user_id, name, protocol, base_url, full_address, model, api_key, vendor, models_url, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    store.models.forEach((model, index) => insert.run(model.id, CURRENT_USER_ID, model.name, model.protocol, model.baseUrl, model.fullAddress ? 1 : 0, model.model, model.apiKey, model.vendor || "custom", model.modelsUrl || "", index));
-    database.prepare("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON CONFLICT(user_id, setting_key) DO UPDATE SET setting_value = excluded.setting_value").run(CURRENT_USER_ID, store.defaultModelId);
+    store.models.forEach((model, index) => insert.run(model.id, currentUserId(), model.name, model.protocol, model.baseUrl, model.fullAddress ? 1 : 0, model.model, model.apiKey, model.vendor || "custom", model.modelsUrl || "", index));
+    database.prepare("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON CONFLICT(user_id, setting_key) DO UPDATE SET setting_value = excluded.setting_value").run(currentUserId(), store.defaultModelId);
     database.exec("COMMIT");
   } catch (error) { database.exec("ROLLBACK"); throw error; }
 }
@@ -367,10 +530,10 @@ export async function writeModelConfigStore(store: { models: Array<{ id: string;
 export async function readExternalMcpConfig() {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [rows] = await pool.execute("SELECT id, name, url, token, enabled, disabled_tools_json AS disabledToolsJson, allowed_tools_json AS allowedToolsJson FROM external_mcp_servers WHERE user_id = ? ORDER BY id", [CURRENT_USER_ID]);
+    const [rows] = await pool.execute("SELECT id, name, url, token, enabled, disabled_tools_json AS disabledToolsJson, allowed_tools_json AS allowedToolsJson FROM external_mcp_servers WHERE user_id = ? ORDER BY id", [currentUserId()]);
     return { servers: (rows as Array<{ id: string; name: string; url: string; token: string; enabled: number; disabledToolsJson: string; allowedToolsJson: string }>).map((row) => ({ id: row.id, name: row.name, url: row.url, token: row.token, enabled: Boolean(row.enabled), disabledTools: JSON.parse(row.disabledToolsJson) as string[], allowedTools: JSON.parse(row.allowedToolsJson) as string[] })) };
   }
-  const rows = getDatabase().prepare("SELECT id, name, url, token, enabled, disabled_tools_json AS disabledToolsJson, allowed_tools_json AS allowedToolsJson FROM external_mcp_servers WHERE user_id = ? ORDER BY rowid").all(CURRENT_USER_ID) as Array<{ id: string; name: string; url: string; token: string; enabled: number; disabledToolsJson: string; allowedToolsJson: string }>;
+  const rows = getDatabase().prepare("SELECT id, name, url, token, enabled, disabled_tools_json AS disabledToolsJson, allowed_tools_json AS allowedToolsJson FROM external_mcp_servers WHERE user_id = ? ORDER BY rowid").all(currentUserId()) as Array<{ id: string; name: string; url: string; token: string; enabled: number; disabledToolsJson: string; allowedToolsJson: string }>;
   return { servers: rows.map((row) => ({ id: row.id, name: row.name, url: row.url, token: row.token, enabled: Boolean(row.enabled), disabledTools: JSON.parse(row.disabledToolsJson) as string[], allowedTools: JSON.parse(row.allowedToolsJson) as string[] })) };
 }
 
@@ -380,9 +543,9 @@ export async function writeExternalMcpConfig(store: { servers: Array<{ id: strin
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-      await connection.execute("DELETE FROM external_mcp_servers WHERE user_id = ?", [CURRENT_USER_ID]);
+      await connection.execute("DELETE FROM external_mcp_servers WHERE user_id = ?", [currentUserId()]);
       for (const server of store.servers) {
-        await connection.execute("INSERT INTO external_mcp_servers (id, user_id, name, url, token, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [server.id, CURRENT_USER_ID, server.name, server.url, server.token, server.enabled ? 1 : 0, JSON.stringify(server.disabledTools), JSON.stringify(server.allowedTools)]);
+        await connection.execute("INSERT INTO external_mcp_servers (id, user_id, name, url, token, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [server.id, currentUserId(), server.name, server.url, server.token, server.enabled ? 1 : 0, JSON.stringify(server.disabledTools), JSON.stringify(server.allowedTools)]);
       }
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; }
@@ -392,9 +555,9 @@ export async function writeExternalMcpConfig(store: { servers: Array<{ id: strin
   const database = getDatabase();
   database.exec("BEGIN IMMEDIATE");
   try {
-    database.prepare("DELETE FROM external_mcp_servers WHERE user_id = ?").run(CURRENT_USER_ID);
+    database.prepare("DELETE FROM external_mcp_servers WHERE user_id = ?").run(currentUserId());
     const insert = database.prepare("INSERT INTO external_mcp_servers (id, user_id, name, url, token, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-    store.servers.forEach((server) => insert.run(server.id, CURRENT_USER_ID, server.name, server.url, server.token, server.enabled ? 1 : 0, JSON.stringify(server.disabledTools), JSON.stringify(server.allowedTools)));
+    store.servers.forEach((server) => insert.run(server.id, currentUserId(), server.name, server.url, server.token, server.enabled ? 1 : 0, JSON.stringify(server.disabledTools), JSON.stringify(server.allowedTools)));
     database.exec("COMMIT");
   } catch (error) { database.exec("ROLLBACK"); throw error; }
 }
@@ -402,16 +565,16 @@ export async function writeExternalMcpConfig(store: { servers: Array<{ id: strin
 export async function listConversations() {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [rows] = await pool.execute("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC", [CURRENT_USER_ID]);
+    const [rows] = await pool.execute("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC", [currentUserId()]);
     return (rows as Array<{ id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null }>).map((row) => ({ ...row, pinned: Boolean(row.pinned) }));
   }
-  return (getDatabase().prepare("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC").all(CURRENT_USER_ID) as Array<{ id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null }>).map((row) => ({ ...row, pinned: Boolean(row.pinned) }));
+  return (getDatabase().prepare("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC").all(currentUserId()) as Array<{ id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null }>).map((row) => ({ ...row, pinned: Boolean(row.pinned) }));
 }
 
 export async function getConversation(id: string): Promise<StoredConversation | null> {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [conversationRows] = await pool.execute("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE id = ? AND user_id = ?", [id, CURRENT_USER_ID]);
+    const [conversationRows] = await pool.execute("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE id = ? AND user_id = ?", [id, currentUserId()]);
     const row = (conversationRows as Array<{ id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null }>)[0];
     if (!row) return null;
     const [messageRows] = await pool.execute("SELECT role, content, is_error AS error, result_json AS resultJson FROM conversation_messages WHERE conversation_id = ? ORDER BY message_index", [id]);
@@ -425,7 +588,7 @@ export async function getConversation(id: string): Promise<StoredConversation | 
     };
   }
   const database = getDatabase();
-  const row = database.prepare("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE id = ? AND user_id = ?").get(id, CURRENT_USER_ID) as { id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null } | undefined;
+  const row = database.prepare("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE id = ? AND user_id = ?").get(id, currentUserId()) as { id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null } | undefined;
   if (!row) return null;
   const messages = database.prepare("SELECT role, content, is_error AS error, result_json AS resultJson FROM conversation_messages WHERE conversation_id = ? ORDER BY message_index").all(id) as Array<{ role: StoredMessage["role"]; content: string; error: number; resultJson: string | null }>;
   const { projectId, projectName, pinned, ...conversation } = row;
@@ -450,9 +613,9 @@ export async function saveConversation(id: string, title: string, messages: Stor
     const updatedAt = Date.now();
     try {
       await connection.beginTransaction();
-      const [existingRows] = await connection.execute("SELECT id FROM conversations WHERE id = ? AND user_id = ? FOR UPDATE", [id, CURRENT_USER_ID]);
-      if ((existingRows as Array<{ id: string }>).length) await connection.execute("UPDATE conversations SET title = ?, updated_at = ?, project_id = ?, project_name = ? WHERE id = ? AND user_id = ?", [title, updatedAt, projectId || null, projectName || null, id, CURRENT_USER_ID]);
-      else await connection.execute("INSERT INTO conversations (id, user_id, title, updated_at, project_id, project_name) VALUES (?, ?, ?, ?, ?, ?)", [id, CURRENT_USER_ID, title, updatedAt, projectId || null, projectName || null]);
+      const [existingRows] = await connection.execute("SELECT id FROM conversations WHERE id = ? AND user_id = ? FOR UPDATE", [id, currentUserId()]);
+      if ((existingRows as Array<{ id: string }>).length) await connection.execute("UPDATE conversations SET title = ?, updated_at = ?, project_id = ?, project_name = ? WHERE id = ? AND user_id = ?", [title, updatedAt, projectId || null, projectName || null, id, currentUserId()]);
+      else await connection.execute("INSERT INTO conversations (id, user_id, title, updated_at, project_id, project_name) VALUES (?, ?, ?, ?, ?, ?)", [id, currentUserId(), title, updatedAt, projectId || null, projectName || null]);
       await connection.execute("DELETE FROM conversation_messages WHERE conversation_id = ?", [id]);
       for (const [index, message] of messages.entries()) {
         await connection.execute("INSERT INTO conversation_messages (conversation_id, message_index, role, content, is_error, result_json) VALUES (?, ?, ?, ?, ?, ?)", [id, index, message.role, message.content, message.error ? 1 : 0, message.result === undefined ? null : JSON.stringify(message.result)]);
@@ -466,8 +629,8 @@ export async function saveConversation(id: string, title: string, messages: Stor
   const updatedAt = Date.now();
   database.exec("BEGIN IMMEDIATE");
   try {
-    database.prepare("INSERT INTO conversations (id, user_id, title, updated_at, project_id, project_name) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at, project_id = excluded.project_id, project_name = excluded.project_name WHERE conversations.user_id = excluded.user_id").run(id, CURRENT_USER_ID, title, updatedAt, projectId || null, projectName || null);
-    database.prepare("DELETE FROM conversation_messages WHERE conversation_id = ? AND EXISTS (SELECT 1 FROM conversations WHERE id = ? AND user_id = ?)").run(id, id, CURRENT_USER_ID);
+    database.prepare("INSERT INTO conversations (id, user_id, title, updated_at, project_id, project_name) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at, project_id = excluded.project_id, project_name = excluded.project_name WHERE conversations.user_id = excluded.user_id").run(id, currentUserId(), title, updatedAt, projectId || null, projectName || null);
+    database.prepare("DELETE FROM conversation_messages WHERE conversation_id = ? AND EXISTS (SELECT 1 FROM conversations WHERE id = ? AND user_id = ?)").run(id, id, currentUserId());
     const insert = database.prepare("INSERT INTO conversation_messages (conversation_id, message_index, role, content, is_error, result_json) VALUES (?, ?, ?, ?, ?, ?)");
     messages.forEach((message, index) => insert.run(id, index, message.role, message.content, message.error ? 1 : 0, message.result === undefined ? null : JSON.stringify(message.result)));
     database.exec("COMMIT");
@@ -481,17 +644,17 @@ export async function saveConversation(id: string, title: string, messages: Stor
 export async function deleteConversation(id: string) {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [result] = await pool.execute("DELETE FROM conversations WHERE id = ? AND user_id = ?", [id, CURRENT_USER_ID]);
+    const [result] = await pool.execute("DELETE FROM conversations WHERE id = ? AND user_id = ?", [id, currentUserId()]);
     return (result as { affectedRows: number }).affectedRows > 0;
   }
-  return getDatabase().prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(id, CURRENT_USER_ID).changes > 0;
+  return getDatabase().prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(id, currentUserId()).changes > 0;
 }
 
 export async function setConversationPinned(id: string, pinned: boolean) {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [result] = await pool.execute("UPDATE conversations SET pinned = ? WHERE id = ? AND user_id = ?", [pinned ? 1 : 0, id, CURRENT_USER_ID]);
+    const [result] = await pool.execute("UPDATE conversations SET pinned = ? WHERE id = ? AND user_id = ?", [pinned ? 1 : 0, id, currentUserId()]);
     return (result as { affectedRows: number }).affectedRows > 0;
   }
-  return getDatabase().prepare("UPDATE conversations SET pinned = ? WHERE id = ? AND user_id = ?").run(pinned ? 1 : 0, id, CURRENT_USER_ID).changes > 0;
+  return getDatabase().prepare("UPDATE conversations SET pinned = ? WHERE id = ? AND user_id = ?").run(pinned ? 1 : 0, id, currentUserId()).changes > 0;
 }
