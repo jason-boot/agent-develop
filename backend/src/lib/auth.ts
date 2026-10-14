@@ -65,6 +65,7 @@ function jwtSecret() {
 
 function signJwt(input: string) { return createHmac("sha256", jwtSecret()).update(input).digest("base64url"); }
 function secureCookie(request: Request) { return new URL(request.url).protocol === "https:" || request.headers.get("x-forwarded-proto") === "https"; }
+function redirectResponse(url: URL) { return new Response(null, { status: 302, headers: { Location: url.toString() } }); }
 function cookie(request: Request, name: string) {
   return request.headers.get("cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
 }
@@ -107,7 +108,7 @@ export function createOAuthLoginUrl(request: Request, providerId: string) {
   authorizeUrl.searchParams.set("response_type", "code");
   authorizeUrl.searchParams.set("scope", provider.scope);
   authorizeUrl.searchParams.set("state", state);
-  const response = Response.redirect(authorizeUrl, 302);
+  const response = redirectResponse(authorizeUrl);
   response.headers.append("Set-Cookie", `little_sunshine_oauth_state_${providerId}=${state}; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=600${secureCookie(request) ? "; Secure" : ""}`);
   response.headers.append("Set-Cookie", `little_sunshine_oauth_popup_${providerId}=${requestUrlPopup(request) ? "1" : "0"}; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=600${secureCookie(request) ? "; Secure" : ""}`);
   return response;
@@ -223,7 +224,7 @@ export async function completeOAuthLogin(request: Request, providerId: string) {
       const payload = JSON.stringify({ type: "little-sunshine-oauth", auth, message, provider: providerId }).replace(/</g, "\\u003c");
       const targetOrigin = JSON.stringify(new URL(appBaseUrl).origin);
       response = new Response(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>授权完成</title><body><p>授权完成，正在返回 Little Sunshine…</p><script>if(window.opener){window.opener.postMessage(${payload},${targetOrigin});window.close();}</script></body></html>`, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
-    } else response = Response.redirect(new URL(pathName, appBaseUrl), 302);
+    } else response = redirectResponse(new URL(pathName, appBaseUrl));
     response.headers.append("Set-Cookie", clearState);
     response.headers.append("Set-Cookie", clearPopup);
     return user ? setSessionCookie(response, request, user) : response;
