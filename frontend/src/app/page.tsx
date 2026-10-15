@@ -434,7 +434,7 @@ function DailyModelTrendChart({ points, chartSpec, from, to }: { points: DailyMo
   </section>;
 }
 
-function ChatApp({ authenticated, userId, username, unboundProviders = [], onRequireLogin, onLogout }: { authenticated: boolean; userId?: number; username?: string; unboundProviders?: Array<{ id: string; name: string }>; onRequireLogin: () => void; onLogout: () => void }) {
+function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfile, onLogout }: { authenticated: boolean; userId?: number; username?: string; onRequireLogin: () => void; onOpenProfile: () => void; onLogout: () => void }) {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([{ role: "assistant", content: welcome }]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -1330,7 +1330,7 @@ function ChatApp({ authenticated, userId, username, unboundProviders = [], onReq
         {recentConversations.length ? sortConversations(recentConversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming} menuOpen={openConversationMenuId === conversation.id} onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />) : <div className="conversation-history-empty">暂无会话</div>}
       </div>
       <div className="sidebar-bottom">
-        {authenticated ? <div className="sidebar-account"><div className="user-chip"><span className="avatar">{username?.slice(0, 1).toUpperCase() || "U"}</span><div className="sidebar-account-name"><strong>{username || "已登录用户"}</strong><small>已登录</small></div><button type="button" className="sidebar-account-more" aria-label="账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /></button></div>{userMenuOpen && <div className="sidebar-account-menu">{unboundProviders.map((provider) => <button type="button" className="sidebar-account-bind" key={provider.id} onClick={() => { window.location.href = `/api/auth/oauth/${encodeURIComponent(provider.id)}`; }}>{`绑定${provider.name}`}</button>)}<button type="button" className="sidebar-account-logout" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut aria-hidden="true" />退出登录</button></div>}</div> : <button type="button" className="guest-sidebar-login" onClick={onRequireLogin}>登录</button>}
+        {authenticated ? <div className="sidebar-account"><div className="user-chip"><span className="avatar">{username?.slice(0, 1).toUpperCase() || "U"}</span><div className="sidebar-account-name"><strong>{username || "已登录用户"}</strong><small>已登录</small></div><button type="button" className="sidebar-account-more" aria-label="账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /></button></div>{userMenuOpen && <div className="sidebar-account-menu"><button type="button" className="sidebar-account-profile" onClick={() => { setUserMenuOpen(false); onOpenProfile(); }}>个人资料</button><button type="button" className="sidebar-account-logout" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut aria-hidden="true" />退出登录</button></div>}</div> : <button type="button" className="guest-sidebar-login" onClick={onRequireLogin}>登录</button>}
       </div>
     </aside>
 
@@ -1503,7 +1503,7 @@ function ChatApp({ authenticated, userId, username, unboundProviders = [], onReq
 
 export default function Home() {
   type AuthProvider = { id: string; name: string };
-  type AuthUser = { id: number; username: string; local?: boolean; identities: Array<{ provider: string; providerUsername: string }> };
+  type AuthUser = { id: number; username: string; local?: boolean; identities: Array<{ provider: string; providerUsername: string; providerDisplayName?: string }> };
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
   const [providers, setProviders] = useState<AuthProvider[]>([]);
   const [authError, setAuthError] = useState("");
@@ -1513,6 +1513,14 @@ export default function Home() {
   const [password, setPassword] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileError, setProfileError] = useState("");
+  const [profileBusy, setProfileBusy] = useState("");
+  const profileProviders: AuthProvider[] = [
+    { id: "github", name: "GitHub" },
+    { id: "gitee", name: "Gitee" },
+    { id: "google", name: "Google" },
+  ];
   useEffect(() => {
     let cancelled = false;
     fetch("/api/auth/me").then(async (response) => {
@@ -1575,9 +1583,50 @@ export default function Home() {
     }
     window.location.href = `/api/auth/oauth/${encodeURIComponent(provider.id)}`;
   };
+  const unlinkProvider = async (provider: AuthProvider) => {
+    setProfileError("");
+    setProfileBusy(provider.id);
+    try {
+      const response = await fetch(`/api/auth/identities/${encodeURIComponent(provider.id)}`, { method: "DELETE" });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "解绑失败。");
+      const current = await fetch("/api/auth/me");
+      const data = await current.json() as { user?: AuthUser | null; providers?: AuthProvider[] };
+      if (!current.ok) throw new Error("已解绑，但刷新账号信息失败。");
+      setUser(data.user ?? null);
+      setProviders(data.providers || []);
+    } catch (error) {
+      setProfileError(error instanceof Error ? error.message : "解绑失败，请稍后重试。");
+    } finally {
+      setProfileBusy("");
+    }
+  };
   return <>
     {!user && <div className="guest-auth-bar"><button type="button" className="primary" onClick={() => openAuth("login")}>登录/注册</button></div>}
-    <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} unboundProviders={user ? providers.filter((provider) => !user.identities.some((identity) => identity.provider === provider.id)) : []} onRequireLogin={() => openAuth("login")} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); window.location.reload(); }} />
+    <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} onRequireLogin={() => openAuth("login")} onOpenProfile={() => { setProfileError(""); setProfileOpen(true); }} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); window.location.reload(); }} />
+    <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
+      <DialogContent className="max-w-[480px] border-zinc-200 bg-white text-zinc-900">
+        <DialogHeader>
+          <DialogTitle>个人资料</DialogTitle>
+          <DialogDescription>管理当前账号和已绑定的第三方账号。</DialogDescription>
+        </DialogHeader>
+        <div className="profile-section">
+          <div className="profile-username"><span>注册用户名</span><strong>{user?.username || "—"}</strong></div>
+          <div className="profile-provider-heading">第三方账号</div>
+          <div className="profile-provider-list">
+            {profileProviders.map((provider) => {
+              const identity = user?.identities.find((item) => item.provider === provider.id);
+              const configured = providers.some((item) => item.id === provider.id);
+              return <div className="profile-provider-row" key={provider.id}>
+                <div className="profile-provider-info"><strong>{provider.name}</strong><span>{identity ? identity.providerUsername || identity.providerDisplayName || "已绑定" : configured ? "未绑定" : "尚未配置"}</span></div>
+                {identity ? <button type="button" className="profile-unlink-button" disabled={Boolean(profileBusy)} onClick={() => void unlinkProvider(provider)}>{profileBusy === provider.id ? "处理中…" : "解绑"}</button> : <button type="button" className="profile-link-button" disabled={Boolean(profileBusy) || !configured} title={!configured ? `尚未配置 ${provider.name} OAuth` : undefined} onClick={() => openOAuthPopup(provider)}>绑定</button>}
+              </div>;
+            })}
+          </div>
+          {profileError && <div className="profile-error" role="alert">{profileError}</div>}
+        </div>
+      </DialogContent>
+    </Dialog>
     {showAuthModal && !user && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAuthModal(false); }}><section className="auth-card auth-modal-card" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title"><button type="button" className="auth-modal-close" aria-label="关闭" onClick={() => setShowAuthModal(false)}>×</button><div className="auth-sun">☀</div><h1 id="auth-modal-title">Little Sunshine</h1><p>{authMode === "login" ? "登录你的 Little Sunshine 账号" : "创建 Little Sunshine 账号"}</p>
     {authMessage && <div className="auth-message">{authMessage}</div>}{authError && user === undefined && <button type="button" className="auth-secondary-button" onClick={() => window.location.reload()}>重新连接</button>}
       <form className="auth-form" onSubmit={async (event) => {

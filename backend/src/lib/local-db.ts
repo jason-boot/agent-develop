@@ -379,6 +379,15 @@ export async function bindUserIdentity(userId: number, identity: UserIdentity) {
   } catch (error) { database.exec("ROLLBACK"); throw error; }
 }
 
+export async function removeUserIdentity(userId: number, provider: string) {
+  const sql = "DELETE FROM user_identities WHERE user_id = ? AND provider = ?";
+  if (await getProvider() === "mysql") {
+    const [result] = await (await getMysqlPool()).execute(sql, [userId, provider]);
+    return Number((result as { affectedRows: number }).affectedRows) > 0;
+  }
+  return getDatabase().prepare(sql).run(userId, provider).changes > 0;
+}
+
 type LegacyModel = { id: string; name: string; protocol: string; baseUrl: string; fullAddress?: boolean; model: string; apiKey: string };
 type LegacyExternalServer = { id: string; name: string; url: string; token?: string; enabled?: boolean; disabledTools?: string[]; allowedTools?: string[] };
 
