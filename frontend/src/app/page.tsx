@@ -1585,6 +1585,13 @@ export default function Home() {
     }
     window.location.href = `/api/auth/oauth/${encodeURIComponent(provider.id)}`;
   };
+  const clearAuthCallbackQuery = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("auth");
+    url.searchParams.delete("message");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    setOauthPendingBinding(false);
+  };
   const unlinkProvider = async (provider: AuthProvider) => {
     setProfileError("");
     setProfileBusy(provider.id);
@@ -1605,7 +1612,7 @@ export default function Home() {
   };
   return <>
     {!user && <div className="guest-auth-bar"><button type="button" className="primary" onClick={() => openAuth("login")}>登录/注册</button></div>}
-    <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} onRequireLogin={() => openAuth("login")} onOpenProfile={() => { setProfileError(""); setProfileOpen(true); }} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); window.location.reload(); }} />
+    <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} onRequireLogin={() => openAuth("login")} onOpenProfile={() => { setProfileError(""); setProfileOpen(true); }} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); clearAuthCallbackQuery(); window.location.reload(); }} />
     <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
       <DialogContent className="max-w-[480px] border-zinc-200 bg-white text-zinc-900">
         <DialogHeader>
@@ -1642,6 +1649,7 @@ export default function Home() {
             return;
           }
           if (!response.ok) throw new Error(data.error || (authMode === "register" ? "注册失败。" : "登录失败。"));
+          clearAuthCallbackQuery();
           window.location.reload();
         } catch (error) { setAuthError(error instanceof Error ? error.message : "请求失败，请稍后重试。"); }
         finally { setAuthLoading(false); }
