@@ -282,7 +282,8 @@ function markdownCells(line: string) {
   return line.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|"));
 }
 function MarkdownContent({ content }: { content: string }) {
-  const lines = content.split(/\r?\n/);
+  const normalizedContent = content.replace(/\r\n?/g, "\n").replace(/^\n+/, "").replace(/\n{3,}/g, "\n\n");
+  const lines = normalizedContent.split("\n");
   const parts: React.ReactNode[] = [];
   let textStart = 0;
   let index = 0;
