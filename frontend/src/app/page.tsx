@@ -735,8 +735,8 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       for (const [id, existing] of projectDirectoriesRef.current) {
         if (await directory.isSameEntry(existing)) {
           await saveStoredProjectDirectory(userId, { id, name: projects.find((project) => project.id === id)?.name || directory.name, handle: directory });
-          setSelectedProjectId(id);
-          setProjectError("");
+          projectDirectoriesRef.current.set(id, directory);
+          await startProjectConversation(id);
           return;
         }
       }
@@ -746,7 +746,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       await saveStoredProjectDirectory(userId, { id, name, handle: directory });
       projectDirectoriesRef.current.set(id, directory);
       setProjects((items) => [...items, { id, name }]);
-      setSelectedProjectId(id);
+      await startProjectConversation(id);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return;
       setProjectError(e instanceof Error ? e.message : "打开本地目录失败。");
