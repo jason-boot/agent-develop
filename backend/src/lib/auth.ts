@@ -204,7 +204,7 @@ export async function loginWithPassword(request: Request) {
   if (hash.length !== expected.length || !timingSafeEqual(hash, expected)) return Response.json({ error: "用户名或密码不正确。" }, { status: 401 });
   try {
     await bindPendingIdentity(request, user);
-    return clearPendingIdentity(jsonWithSession(request, user), request);
+    return clearPendingIdentity(jsonWithSession(request, user, pendingIdentity(request)?.provider || null), request);
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "第三方账号绑定失败，请重试。" }, { status: 409 });
   }
