@@ -68,7 +68,12 @@ server {
   "loginPath": "/api/auth/login",
   "oauthAuthorizePath": "/api/auth/oauth/authorize",
   "oauthExchangePath": "/api/auth/oauth/exchange",
-  "providers": [{ "id": "github", "name": "GitHub" }]
+  "providers": [
+    { "id": "github", "name": "GitHub" },
+    { "id": "gitee", "name": "Gitee" },
+    { "id": "gitlab", "name": "GitLab" },
+    { "id": "google", "name": "Google" }
+  ]
 }
 ```
 
