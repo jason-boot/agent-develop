@@ -4,6 +4,7 @@ import path from "node:path";
 import { bindUserIdentity, createLocalUser, findUserById, findUserByIdentity, findUserByUsername, withUserContext, type AppUser, type UserIdentity } from "@/lib/local-db";
 
 const sessionCookie = "little_sunshine_session";
+const pendingIdentityCookie = "little_sunshine_oauth_pending";
 const sessionLifetimeSeconds = 60 * 60 * 24 * 7;
 const jwtIssuer = "little-sunshine";
 
@@ -64,6 +65,28 @@ function jwtSecret() {
 }
 
 function signJwt(input: string) { return createHmac("sha256", jwtSecret()).update(input).digest("base64url"); }
+function pendingIdentity(request: Request): UserIdentity | null {
+  const token = cookie(request, pendingIdentityCookie);
+  if (!token) return null;
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return null;
+  const supplied = Buffer.from(signature);
+  const expected = Buffer.from(signJwt(payload));
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return null;
+  try {
+    const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { identity?: UserIdentity; exp?: number };
+    if (!value.identity || !Number.isFinite(value.exp) || value.exp! <= Date.now() / 1000) return null;
+    return value.identity;
+  } catch { return null; }
+}
+function clearPendingIdentity(response: Response, request: Request) {
+  response.headers.append("Set-Cookie", `${pendingIdentityCookie}=; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=0${secureCookie(request) ? "; Secure" : ""}`);
+  return response;
+}
+async function bindPendingIdentity(request: Request, user: AppUser) {
+  const identity = pendingIdentity(request);
+  if (identity) await bindUserIdentity(user.id, identity);
+}
 function secureCookie(request: Request) { return new URL(request.url).protocol === "https:" || request.headers.get("x-forwarded-proto") === "https"; }
 function redirectResponse(url: URL) { return new Response(null, { status: 302, headers: { Location: url.toString() } }); }
 function cookie(request: Request, name: string) {
@@ -156,7 +179,12 @@ export async function registerWithPassword(request: Request) {
   const hash = await new Promise<Buffer>((resolve, reject) => scrypt(password, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, key) => error ? reject(error) : resolve(key)));
   try {
     const user = await createLocalUser(username, hash.toString("hex"), salt);
-    return jsonWithSession(request, user);
+    try {
+      await bindPendingIdentity(request, user);
+      return clearPendingIdentity(jsonWithSession(request, user), request);
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : "第三方账号绑定失败，请重试。" }, { status: 409 });
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : "";
     if ((error as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE" || (error as { code?: string }).code === "ER_DUP_ENTRY" || /UNIQUE constraint failed|Duplicate entry/i.test(detail)) return Response.json({ error: "该用户名已被注册。" }, { status: 409 });
@@ -173,7 +201,12 @@ export async function loginWithPassword(request: Request) {
   const hash = await new Promise<Buffer>((resolve, reject) => scrypt(password, user.passwordSalt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, key) => error ? reject(error) : resolve(key)));
   const expected = Buffer.from(user.passwordHash, "hex");
   if (hash.length !== expected.length || !timingSafeEqual(hash, expected)) return Response.json({ error: "用户名或密码不正确。" }, { status: 401 });
-  return jsonWithSession(request, user);
+  try {
+    await bindPendingIdentity(request, user);
+    return clearPendingIdentity(jsonWithSession(request, user), request);
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "第三方账号绑定失败，请重试。" }, { status: 409 });
+  }
 }
 
 function decodeJwt(request: Request) {
@@ -256,6 +289,12 @@ export async function completeOAuthLogin(request: Request, providerId: string) {
     avatarUrl: typeof avatar === "string" ? avatar.slice(0, 1000) : "", createdAt: Date.now(),
   };
 
+  const pendingPayload = Buffer.from(JSON.stringify({ identity, exp: Math.floor(Date.now() / 1000) + 10 * 60 })).toString("base64url");
+  const setPendingIdentity = (response: Response) => {
+    response.headers.append("Set-Cookie", `${pendingIdentityCookie}=${pendingPayload}.${signJwt(pendingPayload)}; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=600${secureCookie(request) ? "; Secure" : ""}`);
+    return response;
+  };
+
   const currentSession = await getSession(request);
   if (currentSession && !currentSession.local) {
     try {
@@ -268,7 +307,7 @@ export async function completeOAuthLogin(request: Request, providerId: string) {
 
   const existingUser = await findUserByIdentity(providerId, identity.providerUserId);
   if (existingUser?.isActive) return redirect("/", existingUser);
-  return redirect("/?auth=provider-unlinked");
+  return setPendingIdentity(redirect("/?auth=provider-unlinked"));
 }
 
 export async function requireApiUser(request: Request, callback: () => Promise<Response>) {

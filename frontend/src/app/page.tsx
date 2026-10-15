@@ -1522,7 +1522,7 @@ export default function Home() {
       if (!cancelled) setProviders(data.providers || []);
     }).catch((error) => { if (!cancelled) setAuthError(error instanceof Error ? error.message : "读取登录状态失败。"); });
     const query = new URLSearchParams(window.location.search);
-    if (query.get("auth") === "provider-unlinked") { setAuthMessage("该第三方账号尚未绑定用户。请先注册或登录，然后在登录后的账号栏绑定第三方账号。"); setAuthMode("register"); setShowAuthModal(true); }
+    if (query.get("auth") === "provider-unlinked") { setAuthMessage("授权成功。请输入已有账号的用户名和密码完成绑定；如果还没有账号，请切换到注册并创建账号，注册后会自动绑定。"); setAuthMode("register"); setShowAuthModal(true); }
     else if (query.get("auth") === "provider-bound") setAuthMessage("第三方账号绑定成功。");
     else if (query.get("auth") === "cancelled") setAuthMessage("第三方登录已取消。");
     else if (query.get("auth") === "bind-failed") setAuthMessage(query.get("message") || "第三方账号绑定失败。");
@@ -1536,7 +1536,7 @@ export default function Home() {
       if (result.auth === "provider-unlinked") {
         setUser(null);
         const providerName = providers.find((provider) => provider.id === result.provider)?.name || result.provider || "第三方平台";
-        setAuthMessage(`该 ${providerName} 账号尚未绑定用户。请先注册或登录，然后在登录后的账户菜单中绑定第三方账号。`);
+        setAuthMessage(`${providerName} 授权成功。请输入已有账号的用户名和密码完成绑定；如果还没有账号，请切换到注册并创建账号，注册后会自动绑定。`);
         setAuthMode("register");
         setShowAuthModal(true);
       } else if (result.auth === "cancelled" || result.auth === "bind-failed") {
@@ -1573,12 +1573,7 @@ export default function Home() {
       setAuthError(`后端尚未配置 ${provider.name} 登录，请在 auth.json 中填写对应平台的 clientId 和 clientSecret。`);
       return;
     }
-    const width = 600;
-    const height = 720;
-    const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
-    const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
-    const popup = window.open(`/api/auth/oauth/${encodeURIComponent(provider.id)}?popup=1`, "little-sunshine-oauth", `popup=yes,width=${width},height=${height},left=${left},top=${top}`);
-    if (!popup) setAuthError("浏览器拦截了授权弹窗，请允许此网站打开弹出窗口后重试。");
+    window.location.href = `/api/auth/oauth/${encodeURIComponent(provider.id)}`;
   };
   return <>
     {!user && <div className="guest-auth-bar"><button type="button" className="primary" onClick={() => openAuth("login")}>登录/注册</button></div>}
@@ -1600,7 +1595,7 @@ export default function Home() {
         {authError && <div className="auth-error" role="alert">{authError}</div>}
         <button type="submit" className="github-login-button" disabled={authLoading}>{authLoading ? "处理中…" : authMode === "register" ? "注册并登录" : "登录"}</button>
       </form>
-      <div className="auth-providers"><div className="auth-provider-divider"><span>或使用第三方账号</span></div><div className="auth-provider-icons">{oauthButtons.map((provider) => <button key={provider.id} type="button" className="auth-provider-icon-button" aria-label={`使用 ${provider.name} 授权`} onClick={() => openOAuthPopup(provider)}><span className="auth-provider-tooltip" aria-hidden="true">{provider.name}</span>{provider.id === "github" ? <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.54v-2.08c-3.1.68-3.75-1.32-3.75-1.32-.5-1.3-1.23-1.65-1.23-1.65-1.01-.69.08-.68.08-.68 1.12.08 1.7 1.15 1.7 1.15.99 1.69 2.6 1.2 3.23.92.1-.72.39-1.2.7-1.48-2.48-.28-5.09-1.24-5.09-5.51 0-1.22.44-2.21 1.15-2.99-.12-.28-.5-1.42.11-2.95 0 0 .94-.3 3.05 1.14a10.6 10.6 0 0 1 5.55 0c2.11-1.44 3.04-1.14 3.04-1.14.61 1.53.23 2.67.12 2.95.71.78 1.14 1.77 1.14 2.99 0 4.28-2.61 5.22-5.1 5.5.4.34.75 1.02.75 2.06v3.09c0 .3.2.65.76.54A11.1 11.1 0 0 0 12 .9Z" /></svg> : provider.id === "gitee" ? <span className="gitee-provider-mark">G</span> : provider.id === "google" ? <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.7c3.9-3.6 6-8.8 6-15Z"/><path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.8l-6.7-5.1c-1.8 1.2-4 1.9-6.8 1.9-5.2 0-9.6-3.5-11.2-8.2H5.9v5.2C9.3 39.6 16.1 44 24 44Z"/><path fill="#FBBC05" d="M12.8 27.8a12 12 0 0 1 0-7.6V15H5.9a20 20 0 0 0 0 18l6.9-5.2Z"/><path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.9-5.9C34.1 6 29.5 4 24 4 16.1 4 9.3 8.4 5.9 15l6.9 5.2c1.6-4.7 6-8.1 11.2-8.1Z"/></svg> : <span>{provider.name.slice(0, 1).toUpperCase()}</span>}</button>)}</div><small>第三方账号仅用于绑定已有用户</small></div>
+      <div className="auth-providers"><div className="auth-provider-divider"><span>或使用第三方账号</span></div><div className="auth-provider-icons">{oauthButtons.map((provider) => <button key={provider.id} type="button" className="auth-provider-icon-button" aria-label={`使用 ${provider.name} 授权`} onClick={() => openOAuthPopup(provider)}><span className="auth-provider-tooltip" aria-hidden="true">{provider.name}</span>{provider.id === "github" ? <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.54v-2.08c-3.1.68-3.75-1.32-3.75-1.32-.5-1.3-1.23-1.65-1.23-1.65-1.01-.69.08-.68.08-.68 1.12.08 1.7 1.15 1.7 1.15.99 1.69 2.6 1.2 3.23.92.1-.72.39-1.2.7-1.48-2.48-.28-5.09-1.24-5.09-5.51 0-1.22.44-2.21 1.15-2.99-.12-.28-.5-1.42.11-2.95 0 0 .94-.3 3.05 1.14a10.6 10.6 0 0 1 5.55 0c2.11-1.44 3.04-1.14 3.04-1.14.61 1.53.23 2.67.12 2.95.71.78 1.14 1.77 1.14 2.99 0 4.28-2.61 5.22-5.1 5.5.4.34.75 1.02.75 2.06v3.09c0 .3.2.65.76.54A11.1 11.1 0 0 0 12 .9Z" /></svg> : provider.id === "gitee" ? <span className="gitee-provider-mark">G</span> : provider.id === "google" ? <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.7c3.9-3.6 6-8.8 6-15Z"/><path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.8l-6.7-5.1c-1.8 1.2-4 1.9-6.8 1.9-5.2 0-9.6-3.5-11.2-8.2H5.9v5.2C9.3 39.6 16.1 44 24 44Z"/><path fill="#FBBC05" d="M12.8 27.8a12 12 0 0 1 0-7.6V15H5.9a20 20 0 0 0 0 18l6.9-5.2Z"/><path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.9-5.9C34.1 6 29.5 4 24 4 16.1 4 9.3 8.4 5.9 15l6.9 5.2c1.6-4.7 6-8.1 11.2-8.1Z"/></svg> : <span>{provider.name.slice(0, 1).toUpperCase()}</span>}</button>)}</div><small>授权后登录已有账号，或注册新账号并自动绑定</small></div>
       <button type="button" className="auth-mode-button" onClick={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "没有账号？注册" : "已有账号？登录"}</button>
   </section></div>}
   </>;
