@@ -50,7 +50,7 @@ function openConfigFolder() {
     try { fs.chmodSync(databaseConfig, 0o600); } catch (_) { /* Keep platform defaults if chmod is unavailable. */ }
   }
   const desktopAuthConfig = path.join(configDirectory, "desktop-auth.json");
-  const desktopAuthExample = path.join(app.getAppPath(), "backend", "desktop-auth.example.json");
+  const desktopAuthExample = path.join(__dirname, "desktop-auth.example.json");
   if (!fs.existsSync(desktopAuthConfig) && fs.existsSync(desktopAuthExample)) {
     fs.copyFileSync(desktopAuthExample, desktopAuthConfig, fs.constants.COPYFILE_EXCL);
     try { fs.chmodSync(desktopAuthConfig, 0o600); } catch (_) { /* Keep platform defaults if chmod is unavailable. */ }

@@ -35,8 +35,7 @@
     "files": [
       "electron/**/*",
       "package.json",
-      "backend/database.example.json",
-      "backend/desktop-auth.example.json"
+      "backend/database.example.json"
     ],
     "extraResources": [
       {
