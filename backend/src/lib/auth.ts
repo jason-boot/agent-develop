@@ -27,10 +27,6 @@ type OAuthProviderConfig = {
 type AuthConfig = { jwtSecret?: string; appBaseUrl?: string; providers?: Record<string, OAuthProviderConfig> };
 type DesktopAuthConfig = {
   baseUrl?: string;
-  loginPath?: string;
-  oauthAuthorizePath?: string;
-  oauthExchangePath?: string;
-  providers?: Array<{ id: string; name: string }>;
 };
 type OAuthProvider = Required<Pick<OAuthProviderConfig, "clientId" | "clientSecret" | "authorizationUrl" | "tokenUrl" | "userInfoUrl" | "scope" | "tokenRequestFormat" | "userIdField" | "usernameField" | "displayNameField" | "avatarField">> & { callbackUrl?: string; tokenGrantType?: string };
 type AppSession = { id: number; username: string; tokenVersion: number; local?: boolean; authProvider?: string | null };
@@ -225,8 +221,7 @@ export async function loginDesktopForHandoff(request: Request) {
   if (!isDesktopRuntime()) return Response.json({ error: "桌面登录仅在桌面端可用。" }, { status: 404 });
   if (!username || !password) return Response.json({ error: "请输入用户名和密码。" }, { status: 400 });
   try {
-    const config = desktopAuthConfig();
-    const response = await fetch(desktopRemoteUrl(config.loginPath || "/api/auth/login"), {
+    const response = await fetch(desktopRemoteUrl("/api/auth/login"), {
       method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ username, password }), signal: AbortSignal.timeout(15_000),
     });
@@ -243,7 +238,12 @@ export async function loginDesktopForHandoff(request: Request) {
 
 export function listDesktopOAuthProviders() {
   if (!isDesktopRuntime()) return [];
-  return (desktopAuthConfig().providers || []).filter((provider) => /^[a-z0-9_-]{2,40}$/.test(provider.id) && provider.name).map(({ id, name }) => ({ id, name }));
+  return [
+    { id: "github", name: "GitHub" },
+    { id: "gitee", name: "Gitee" },
+    { id: "gitlab", name: "GitLab" },
+    { id: "google", name: "Google" },
+  ];
 }
 
 function desktopCallbackUrl(request: Request) {
@@ -255,11 +255,10 @@ export function createDesktopOAuthUrl(request: Request, providerId: string) {
   const provider = listDesktopOAuthProviders().find((entry) => entry.id === providerId);
   if (!provider) return Response.json({ error: "该授权方式未配置。" }, { status: 404 });
   try {
-    const config = desktopAuthConfig();
     const state = randomBytes(32).toString("base64url");
     const verifier = randomBytes(48).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
-    const authorize = new URL(config.oauthAuthorizePath || "/api/auth/oauth/authorize", desktopRemoteUrl("/"));
+    const authorize = new URL("/api/auth/oauth/authorize", desktopRemoteUrl("/"));
     authorize.searchParams.set("provider", providerId);
     authorize.searchParams.set("redirect_uri", desktopCallbackUrl(request));
     authorize.searchParams.set("response_type", "code");
@@ -289,9 +288,8 @@ export async function completeDesktopOAuthCallback(request: Request) {
   if (url.searchParams.has("error")) return fail("第三方授权已取消。");
   const code = url.searchParams.get("code");
   if (!code) return fail("远程认证服务未返回授权码。");
-  const config = desktopAuthConfig();
   try {
-    const exchange = await fetch(desktopRemoteUrl(config.oauthExchangePath || "/api/auth/oauth/exchange"), {
+    const exchange = await fetch(desktopRemoteUrl("/api/auth/oauth/exchange"), {
       method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ code, code_verifier: pending.verifier, redirect_uri: desktopCallbackUrl(request), provider: pending.provider }),
       signal: AbortSignal.timeout(15_000),

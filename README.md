@@ -64,22 +64,15 @@ server {
 
 ```json
 {
-  "baseUrl": "https://auth.example.com",
-  "loginPath": "/api/auth/login",
-  "oauthAuthorizePath": "/api/auth/oauth/authorize",
-  "oauthExchangePath": "/api/auth/oauth/exchange",
-  "providers": [
-    { "id": "github", "name": "GitHub" },
-    { "id": "gitee", "name": "Gitee" },
-    { "id": "gitlab", "name": "GitLab" },
-    { "id": "google", "name": "Google" }
-  ]
+  "baseUrl": "https://请替换为你的认证服务域名"
 }
 ```
 
-独立登录页通过本机 API 代理用户名密码登录请求：向远程 `POST {baseUrl}{loginPath}` 发送 `{ "username": "...", "password": "..." }`。成功响应为 `{ "accessToken": "...", "user": { "id": "稳定且唯一的字符串", "username": "...", "displayName": "...", "avatarUrl": "..." } }`；失败时返回 `{ "error": "..." }` 和适当的 HTTP 错误状态。远程令牌仅用于确认登录成功，不会传给桌面渲染页面。
+其余接口路径和四种授权方式由桌面端按下方约定固定提供，不需要逐项配置。
 
-OAuth 授权地址通过 `oauthAuthorizePath` 配置。桌面端会附加 `provider`、`response_type=code`、本机 `redirect_uri`、`state`、`code_challenge` 和 `code_challenge_method=S256` 参数。认证服务完成授权后将 `code` 和原样的 `state` 重定向到 `redirect_uri`。桌面端再向 `oauthExchangePath` 发送 `{ "code": "...", "code_verifier": "...", "redirect_uri": "...", "provider": "..." }`，兑换响应与密码登录成功响应相同。认证服务应校验 state 和 PKCE，并允许桌面应用使用 `http://127.0.0.1:<动态端口>/api/auth/desktop/callback` 回调。
+独立登录页通过本机 API 代理用户名密码登录请求：向远程 `POST {baseUrl}/api/auth/login` 发送 `{ "username": "...", "password": "..." }`。成功响应为 `{ "accessToken": "...", "user": { "id": "稳定且唯一的字符串", "username": "...", "displayName": "...", "avatarUrl": "..." } }`；失败时返回 `{ "error": "..." }` 和适当的 HTTP 错误状态。远程令牌仅用于确认登录成功，不会传给桌面渲染页面。
+
+OAuth 授权使用远程 `GET {baseUrl}/api/auth/oauth/authorize`，桌面端会附加 `provider`、`response_type=code`、本机 `redirect_uri`、`state`、`code_challenge` 和 `code_challenge_method=S256` 参数。认证服务完成授权后将 `code` 和原样的 `state` 重定向到 `redirect_uri`。桌面端再向 `POST {baseUrl}/api/auth/oauth/exchange` 发送 `{ "code": "...", "code_verifier": "...", "redirect_uri": "...", "provider": "..." }`，兑换响应与密码登录成功响应相同。认证服务应校验 state 和 PKCE，并允许桌面应用使用 `http://127.0.0.1:<动态端口>/api/auth/desktop/callback` 回调。登录页固定展示 GitHub、Gitee、GitLab、Google 四种授权方式。
 
 远程用户 ID 会映射到本地用户上下文，用于隔离 SQLite 中的用户数据。远程访问令牌不会用于聊天、模型或 MCP 请求。桌面端固定使用 SQLite，即使配置目录中存在 MySQL 配置也会忽略。Web 端登录和数据库行为不变。
 
