@@ -102,13 +102,13 @@ function providerConfig(providerId: string): OAuthProvider | null {
     authorizationUrl: "https://github.com/login/oauth/authorize", tokenUrl: "https://github.com/login/oauth/access_token",
     userInfoUrl: "https://api.github.com/user", scope: "read:user", tokenRequestFormat: "json" as const,
     userIdField: "id", usernameField: "login", displayNameField: "name", avatarField: "avatar_url",
-  } : {};
+  } : providerId === "google" ? { tokenGrantType: "authorization_code" } : {};
   const result = { ...defaults, ...entry };
   if (!result.authorizationUrl || !result.tokenUrl || !result.userInfoUrl) throw new Error(`认证配置 ${providerId} 缺少 OAuth authorizationUrl、tokenUrl 或 userInfoUrl。`);
   return {
     clientId: entry.clientId, clientSecret: entry.clientSecret,
     authorizationUrl: result.authorizationUrl, tokenUrl: result.tokenUrl, userInfoUrl: result.userInfoUrl,
-    scope: result.scope || "openid profile", callbackUrl: entry.callbackUrl, tokenGrantType: entry.tokenGrantType,
+    scope: result.scope || "openid profile", callbackUrl: entry.callbackUrl, tokenGrantType: result.tokenGrantType,
     tokenRequestFormat: result.tokenRequestFormat || "form", userIdField: result.userIdField || "sub",
     usernameField: result.usernameField || "preferred_username", displayNameField: result.displayNameField || "name", avatarField: result.avatarField || "picture",
   };

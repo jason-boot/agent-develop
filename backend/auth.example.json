@@ -41,6 +41,7 @@
       "scope": "openid profile email",
       "callbackUrl": "https://请替换为你的域名/api/auth/oauth/google/callback",
       "tokenRequestFormat": "form",
+      "tokenGrantType": "authorization_code",
       "userIdField": "sub",
       "usernameField": "email",
       "displayNameField": "name",
