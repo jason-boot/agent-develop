@@ -33,6 +33,7 @@ type DatabaseConfig = {
 };
 
 async function readDatabaseConfig(): Promise<DatabaseConfig> {
+  if (process.env.LITTLE_SUNSHINE_RUNTIME === "desktop") return { provider: "sqlite" };
   try {
     const config = JSON.parse(await readFile(path.join(configDirectory(), "database.json"), "utf8")) as DatabaseConfig;
     if (config.provider !== "sqlite" && config.provider !== "mysql") throw new Error("provider 必须是 sqlite 或 mysql");
@@ -271,6 +272,7 @@ async function getMysqlPool() {
 }
 
 async function getProvider() {
+  if (process.env.LITTLE_SUNSHINE_RUNTIME === "desktop") return "sqlite";
   return (await readDatabaseConfig()).provider || "sqlite";
 }
 

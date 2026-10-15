@@ -17,4 +17,5 @@ backend/.next/
 backend/.next-dev/
 backend/.agent-data/
 backend/auth.json
+backend/desktop-auth.json
 /auth.json

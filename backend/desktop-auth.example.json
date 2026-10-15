@@ -1,0 +1,10 @@
+{
+  "baseUrl": "https://请替换为你的认证服务域名",
+  "loginPath": "/api/auth/login",
+  "oauthAuthorizePath": "/api/auth/oauth/authorize",
+  "oauthExchangePath": "/api/auth/oauth/exchange",
+  "providers": [
+    { "id": "github", "name": "GitHub" },
+    { "id": "google", "name": "Google" }
+  ]
+}

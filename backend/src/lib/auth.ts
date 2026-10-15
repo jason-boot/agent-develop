@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { bindUserIdentity, createLocalUser, findUserById, findUserByIdentity, findUserByUsername, withUserContext, type AppUser, type UserIdentity } from "@/lib/local-db";
@@ -25,12 +25,42 @@ type OAuthProviderConfig = {
   avatarField?: string;
 };
 type AuthConfig = { jwtSecret?: string; appBaseUrl?: string; providers?: Record<string, OAuthProviderConfig> };
+type DesktopAuthConfig = {
+  baseUrl?: string;
+  loginPath?: string;
+  oauthAuthorizePath?: string;
+  oauthExchangePath?: string;
+  providers?: Array<{ id: string; name: string }>;
+};
 type OAuthProvider = Required<Pick<OAuthProviderConfig, "clientId" | "clientSecret" | "authorizationUrl" | "tokenUrl" | "userInfoUrl" | "scope" | "tokenRequestFormat" | "userIdField" | "usernameField" | "displayNameField" | "avatarField">> & { callbackUrl?: string; tokenGrantType?: string };
 type AppSession = { id: number; username: string; tokenVersion: number; local?: boolean; authProvider?: string | null };
 
 let cachedAuthConfig: AuthConfig | undefined;
+const desktopOAuthStates = new Map<string, { provider: string; verifier: string; createdAt: number }>();
+const desktopOAuthTickets = new Map<string, { user: AppUser; username: string; provider: string; expiresAt: number }>();
 function configDirectory() { return process.env.USAGE_AGENT_CONFIG_DIR || path.join(process.cwd(), ".agent-data"); }
 function isConfigPlaceholder(value: string | undefined) { return !value || /^(请填写|请替换|你的域名)/u.test(value.trim()); }
+
+function desktopAuthConfig(): DesktopAuthConfig {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(configDirectory(), "desktop-auth.json"), "utf8")) as DesktopAuthConfig;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("配置根节点必须是 JSON 对象");
+    return parsed;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`桌面认证配置 desktop-auth.json 无法读取：${error instanceof Error ? error.message : "配置格式错误"}`);
+    return {};
+  }
+}
+
+function desktopRemoteUrl(pathname: string) {
+  const config = desktopAuthConfig();
+  if (!config.baseUrl || isConfigPlaceholder(config.baseUrl)) throw new Error("请在桌面配置目录的 desktop-auth.json 中填写远程认证服务 baseUrl。");
+  const base = new URL(config.baseUrl);
+  if (base.protocol !== "https:" && base.hostname !== "localhost" && base.hostname !== "127.0.0.1") throw new Error("远程认证服务必须使用 HTTPS。");
+  return new URL(pathname, base).toString();
+}
+
+function isDesktopRuntime() { return process.env.LITTLE_SUNSHINE_RUNTIME === "desktop"; }
 
 function authConfig(): AuthConfig {
   if (cachedAuthConfig) return cachedAuthConfig;
@@ -122,6 +152,7 @@ function callbackUrl(request: Request, providerId: string, provider: OAuthProvid
 }
 
 export function createOAuthLoginUrl(request: Request, providerId: string) {
+  if (isDesktopRuntime()) return Response.json({ error: "桌面端 OAuth 请使用远程认证服务。" }, { status: 404 });
   const provider = providerConfig(providerId);
   if (!provider) return Response.json({ error: `未配置第三方登录平台：${providerId}` }, { status: 404 });
   const state = randomBytes(32).toString("base64url");
@@ -143,17 +174,143 @@ function getPathValue(value: unknown, fieldPath: string): unknown {
   return fieldPath.split(".").reduce<unknown>((current, key) => current && typeof current === "object" ? (current as Record<string, unknown>)[key] : undefined, value);
 }
 
-function setSessionCookie(response: Response, request: Request, user: AppUser, authProvider: string | null = null) {
+function setSessionCookie(response: Response, request: Request, user: AppUser, authProvider: string | null = null, displayUsername = user.username) {
   const now = Math.floor(Date.now() / 1000);
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-  const payload = Buffer.from(JSON.stringify({ sub: String(user.id), ver: user.tokenVersion, iat: now, exp: now + sessionLifetimeSeconds, iss: jwtIssuer, authProvider })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ sub: String(user.id), ver: user.tokenVersion, name: displayUsername, iat: now, exp: now + sessionLifetimeSeconds, iss: jwtIssuer, authProvider })).toString("base64url");
   const token = `${header}.${payload}.${signJwt(`${header}.${payload}`)}`;
   response.headers.append("Set-Cookie", `${sessionCookie}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${sessionLifetimeSeconds}${secureCookie(request) ? "; Secure" : ""}`);
   return response;
 }
 
-function jsonWithSession(request: Request, user: AppUser, authProvider: string | null = null) {
-  return setSessionCookie(Response.json({ user: { id: user.id, username: user.username } }), request, user, authProvider);
+function jsonWithSession(request: Request, user: AppUser, authProvider: string | null = null, displayUsername = user.username) {
+  return setSessionCookie(Response.json({ user: { id: user.id, username: displayUsername } }), request, user, authProvider, displayUsername);
+}
+
+type DesktopRemoteUser = { id: string; username: string; displayName?: string; avatarUrl?: string };
+function desktopProviderKey() { return `desktop-${createHash("sha256").update(desktopAuthConfig().baseUrl || "").digest("hex").slice(0, 8)}`; }
+async function resolveDesktopUser(remoteUser: DesktopRemoteUser) {
+  const provider = desktopProviderKey();
+  const found = await findUserByIdentity(provider, remoteUser.id);
+  if (found) return found;
+  const localName = `desktop_${createHash("sha256").update(`${provider}:${remoteUser.id}`).digest("hex").slice(0, 24)}`;
+  const fakeSalt = randomBytes(16).toString("hex");
+  const fakePasswordHash = randomBytes(64).toString("hex");
+  try {
+    const user = await createLocalUser(localName, fakePasswordHash, fakeSalt);
+    await bindUserIdentity(user.id, {
+      provider, providerUserId: remoteUser.id, providerUsername: remoteUser.username.slice(0, 191),
+      providerDisplayName: (remoteUser.displayName || remoteUser.username).slice(0, 191),
+      avatarUrl: (remoteUser.avatarUrl || "").slice(0, 1000), createdAt: Date.now(),
+    });
+    return user;
+  } catch (error) {
+    const concurrent = await findUserByIdentity(provider, remoteUser.id);
+    if (concurrent) return concurrent;
+    throw error;
+  }
+}
+
+async function parseDesktopAuthResponse(response: Response): Promise<{ accessToken: string; user: DesktopRemoteUser; error?: string }> {
+  const data = await response.json().catch(() => null) as { accessToken?: unknown; user?: Partial<DesktopRemoteUser>; error?: unknown } | null;
+  if (!response.ok) throw Object.assign(new Error(typeof data?.error === "string" ? data.error : "远程认证失败。"), { status: response.status });
+  if (typeof data?.accessToken !== "string" || !data.accessToken || typeof data.user?.id !== "string" || !data.user.id || typeof data.user.username !== "string" || !data.user.username) throw new Error("远程认证响应格式无效，需要 accessToken 和 user.id、user.username。");
+  return { accessToken: data.accessToken, user: { id: data.user.id, username: data.user.username, displayName: data.user.displayName, avatarUrl: data.user.avatarUrl } };
+}
+
+export async function loginDesktopForHandoff(request: Request) {
+  const body = await request.json().catch(() => null) as { username?: unknown; password?: unknown } | null;
+  const username = typeof body?.username === "string" ? body.username.trim() : "";
+  const password = typeof body?.password === "string" ? body.password : "";
+  if (!isDesktopRuntime()) return Response.json({ error: "桌面登录仅在桌面端可用。" }, { status: 404 });
+  if (!username || !password) return Response.json({ error: "请输入用户名和密码。" }, { status: 400 });
+  try {
+    const config = desktopAuthConfig();
+    const response = await fetch(desktopRemoteUrl(config.loginPath || "/api/auth/login"), {
+      method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ username, password }), signal: AbortSignal.timeout(15_000),
+    });
+    const result = await parseDesktopAuthResponse(response);
+    const user = await resolveDesktopUser(result.user);
+    const ticket = randomBytes(32).toString("base64url");
+    desktopOAuthTickets.set(ticket, { user, username: result.user.username, provider: "password", expiresAt: Date.now() + 2 * 60_000 });
+    return Response.json({ ticket });
+  } catch (error) {
+    const status = Number((error as { status?: number }).status) || 502;
+    return Response.json({ error: error instanceof Error ? error.message : "无法连接远程认证服务。" }, { status });
+  }
+}
+
+export function listDesktopOAuthProviders() {
+  if (!isDesktopRuntime()) return [];
+  return (desktopAuthConfig().providers || []).filter((provider) => /^[a-z0-9_-]{2,40}$/.test(provider.id) && provider.name).map(({ id, name }) => ({ id, name }));
+}
+
+function desktopCallbackUrl(request: Request) {
+  return `http://127.0.0.1:${process.env.PORT || new URL(request.url).port || "3001"}/api/auth/desktop/callback`;
+}
+
+export function createDesktopOAuthUrl(request: Request, providerId: string) {
+  if (!isDesktopRuntime()) return Response.json({ error: "桌面登录仅在桌面端可用。" }, { status: 404 });
+  const provider = listDesktopOAuthProviders().find((entry) => entry.id === providerId);
+  if (!provider) return Response.json({ error: "该授权方式未配置。" }, { status: 404 });
+  try {
+    const config = desktopAuthConfig();
+    const state = randomBytes(32).toString("base64url");
+    const verifier = randomBytes(48).toString("base64url");
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const authorize = new URL(config.oauthAuthorizePath || "/api/auth/oauth/authorize", desktopRemoteUrl("/"));
+    authorize.searchParams.set("provider", providerId);
+    authorize.searchParams.set("redirect_uri", desktopCallbackUrl(request));
+    authorize.searchParams.set("response_type", "code");
+    authorize.searchParams.set("state", state);
+    authorize.searchParams.set("code_challenge", challenge);
+    authorize.searchParams.set("code_challenge_method", "S256");
+    desktopOAuthStates.set(state, { provider: providerId, verifier, createdAt: Date.now() });
+    return Response.json({ authorizationUrl: authorize.toString() });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "无法开始远程授权。" }, { status: 503 });
+  }
+}
+
+export async function completeDesktopOAuthCallback(request: Request) {
+  if (!isDesktopRuntime()) return new Response("Not found", { status: 404 });
+  const url = new URL(request.url);
+  const state = url.searchParams.get("state") || "";
+  const pending = desktopOAuthStates.get(state);
+  desktopOAuthStates.delete(state);
+  const appUrl = process.env.DESKTOP_APP_URL || "http://127.0.0.1:3000";
+  const fail = (message: string) => {
+    const target = new URL("/desktop-login?desktop=1", appUrl);
+    target.searchParams.set("desktopAuthError", message);
+    return Response.redirect(target);
+  };
+  if (!pending || Date.now() - pending.createdAt > 10 * 60_000) return fail("授权已过期，请重试。");
+  if (url.searchParams.has("error")) return fail("第三方授权已取消。");
+  const code = url.searchParams.get("code");
+  if (!code) return fail("远程认证服务未返回授权码。");
+  const config = desktopAuthConfig();
+  try {
+    const exchange = await fetch(desktopRemoteUrl(config.oauthExchangePath || "/api/auth/oauth/exchange"), {
+      method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ code, code_verifier: pending.verifier, redirect_uri: desktopCallbackUrl(request), provider: pending.provider }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const result = await parseDesktopAuthResponse(exchange);
+    const user = await resolveDesktopUser(result.user);
+    const ticket = randomBytes(32).toString("base64url");
+    desktopOAuthTickets.set(ticket, { user, username: result.user.username, provider: pending.provider, expiresAt: Date.now() + 2 * 60_000 });
+    return Response.redirect(`usagecopilot://auth?ticket=${encodeURIComponent(ticket)}`);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : "远程授权失败。");
+  }
+}
+
+export function completeDesktopOAuthTicket(request: Request, ticket: string) {
+  const pending = desktopOAuthTickets.get(ticket);
+  desktopOAuthTickets.delete(ticket);
+  if (!pending || pending.expiresAt <= Date.now()) return Response.json({ error: "授权凭证已过期，请重新登录。" }, { status: 401 });
+  return jsonWithSession(request, pending.user, `desktop:${pending.provider}`, pending.username);
 }
 
 export function clearSessionCookie(request: Request) {
@@ -170,6 +327,7 @@ export function listOAuthProviders() {
 }
 
 export async function registerWithPassword(request: Request) {
+  if (isDesktopRuntime()) return Response.json({ error: "桌面端账号由远程认证服务管理，请直接登录。" }, { status: 404 });
   const body = await request.json().catch(() => null) as { username?: unknown; password?: unknown } | null;
   const username = typeof body?.username === "string" ? body.username.trim() : "";
   const password = typeof body?.password === "string" ? body.password : "";
@@ -193,6 +351,7 @@ export async function registerWithPassword(request: Request) {
 }
 
 export async function loginWithPassword(request: Request) {
+  if (isDesktopRuntime()) return Response.json({ error: "请在系统浏览器打开桌面登录页。" }, { status: 404 });
   const body = await request.json().catch(() => null) as { username?: unknown; password?: unknown } | null;
   const username = typeof body?.username === "string" ? body.username.trim() : "";
   const password = typeof body?.password === "string" ? body.password : "";
@@ -221,10 +380,10 @@ function decodeJwt(request: Request) {
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return null;
   try {
     const header = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8")) as { alg?: string };
-    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { sub?: string; ver?: number; exp?: number; iss?: string; authProvider?: unknown };
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { sub?: string; ver?: number; exp?: number; iss?: string; authProvider?: unknown; name?: unknown };
     const id = Number(payload.sub);
     if (header.alg !== "HS256" || payload.iss !== jwtIssuer || !Number.isSafeInteger(id) || id < 1 || !Number.isInteger(payload.ver) || !Number.isFinite(payload.exp) || payload.exp! <= Date.now() / 1000) return null;
-    return { id, tokenVersion: payload.ver!, authProvider: typeof payload.authProvider === "string" ? payload.authProvider : null };
+    return { id, tokenVersion: payload.ver!, authProvider: typeof payload.authProvider === "string" ? payload.authProvider : null, username: typeof payload.name === "string" ? payload.name : undefined };
   } catch { return null; }
 }
 
@@ -233,10 +392,11 @@ export async function getSession(request: Request): Promise<AppSession | null> {
   if (!claims) return null;
   const user = await findUserById(claims.id);
   if (!user || !user.isActive || user.tokenVersion !== claims.tokenVersion) return null;
-  return { id: user.id, username: user.username, tokenVersion: user.tokenVersion, authProvider: claims.authProvider };
+  return { id: user.id, username: claims.username || user.username, tokenVersion: user.tokenVersion, authProvider: claims.authProvider };
 }
 
 export async function completeOAuthLogin(request: Request, providerId: string) {
+  if (isDesktopRuntime()) return new Response("桌面端 OAuth 请使用远程认证服务。", { status: 404 });
   const provider = providerConfig(providerId);
   if (!provider) return new Response(`未配置第三方平台：${providerId}`, { status: 404 });
   const requestUrl = new URL(request.url);

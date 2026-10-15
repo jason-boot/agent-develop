@@ -1585,6 +1585,7 @@ export default function Home() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileError, setProfileError] = useState("");
   const [profileBusy, setProfileBusy] = useState("");
+  const [desktopMode, setDesktopMode] = useState(false);
   const profileProviders: AuthProvider[] = [
     { id: "github", name: "GitHub" },
     { id: "gitee", name: "Gitee" },
@@ -1593,13 +1594,34 @@ export default function Home() {
   ];
   useEffect(() => {
     let cancelled = false;
+    const initialQuery = new URLSearchParams(window.location.search);
+    setDesktopMode(initialQuery.get("desktop") === "1");
+    const desktopTicket = initialQuery.get("desktopAuthTicket");
+    if (desktopTicket) {
+      fetch(`/api/auth/desktop/complete?ticket=${encodeURIComponent(desktopTicket)}`).then(async (response) => {
+        const data = await response.json() as { error?: string };
+        if (!response.ok) throw new Error(data.error || "授权登录失败。");
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.searchParams.delete("desktopAuthTicket");
+        window.history.replaceState(null, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+        window.location.reload();
+      }).catch((error) => setAuthError(error instanceof Error ? error.message : "授权登录失败。"));
+      return () => { cancelled = true; };
+    }
     fetch("/api/auth/me").then(async (response) => {
       const data = await response.json() as { user?: AuthUser | null; providers?: AuthProvider[] };
       if (!response.ok) throw new Error("无法连接后端服务。");
       if (!cancelled) setUser(data.user);
       if (!cancelled) setProviders(data.providers || []);
     }).catch((error) => { if (!cancelled) setAuthError(error instanceof Error ? error.message : "读取登录状态失败。"); });
-    const query = new URLSearchParams(window.location.search);
+    const query = initialQuery;
+    if (query.get("desktopAuthError")) {
+      setAuthError(query.get("desktopAuthError") || "远程授权失败。");
+      setShowAuthModal(true);
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete("desktopAuthError");
+      window.history.replaceState(null, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+    }
     if (query.get("newSession") === "1") {
       setStartFreshSession(true);
       const cleanUrl = new URL(window.location.href);
@@ -1643,19 +1665,33 @@ export default function Home() {
     return () => window.removeEventListener("message", onOAuthPopupMessage);
   }, []);
 
-  const openAuth = (mode: "login" | "register") => { setAuthMode(mode); setAuthError(""); setShowAuthModal(true); };
+  const openAuth = (mode: "login" | "register") => {
+    if (desktopMode) {
+      window.open(`${window.location.origin}/desktop-login?desktop=1`, "_blank");
+      return;
+    }
+    setAuthMode(mode); setAuthError(""); setShowAuthModal(true);
+  };
   const defaultOAuthProviders: AuthProvider[] = [
     { id: "github", name: "GitHub" },
     { id: "gitee", name: "Gitee" },
     { id: "gitlab", name: "GitLab" },
     { id: "google", name: "Google" },
   ];
-  const oauthButtons = [
+  const oauthButtons = desktopMode ? providers : [
     ...defaultOAuthProviders.map((provider) => providers.find((configured) => configured.id === provider.id) || provider),
     ...providers.filter((provider) => !defaultOAuthProviders.some((builtIn) => builtIn.id === provider.id)),
   ];
   const openOAuthPopup = (provider: AuthProvider) => {
     setAuthError("");
+    if (desktopMode) {
+      void fetch(`/api/auth/desktop/oauth/${encodeURIComponent(provider.id)}`).then(async (response) => {
+        const data = await response.json() as { authorizationUrl?: string; error?: string };
+        if (!response.ok || !data.authorizationUrl) throw new Error(data.error || "无法开始远程授权。");
+        window.open(data.authorizationUrl, "_blank");
+      }).catch((error) => setAuthError(error instanceof Error ? error.message : "无法开始远程授权。"));
+      return;
+    }
     if (!providers.some((configured) => configured.id === provider.id)) {
       const message = `后端尚未配置 ${provider.name} 登录，请在 auth.json 中填写对应平台的 clientId 和 clientSecret。`;
       if (profileOpen) setProfileError(message);
@@ -1697,7 +1733,7 @@ export default function Home() {
     }
   };
   return <>
-    {!user && <div className="guest-auth-bar"><button type="button" className="primary" onClick={() => openAuth("login")}>登录/注册</button></div>}
+    {!user && <div className="guest-auth-bar"><button type="button" className="primary" onClick={() => openAuth("login")}>{desktopMode ? "登录" : "登录/注册"}</button></div>}
     <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} avatarUrl={user?.authProvider ? user.identities.find((identity) => identity.provider === user.authProvider)?.avatarUrl : undefined} startFreshSession={startFreshSession} onRequireLogin={() => openAuth("login")} onOpenProfile={() => { setProfileError(""); setProfileOpen(true); }} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); clearAuthCallbackQuery(); window.location.reload(); }} />
     <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
       <DialogContent className="max-w-[480px] border-zinc-200 bg-white text-zinc-900">
@@ -1707,7 +1743,7 @@ export default function Home() {
         </DialogHeader>
         <div className="profile-section">
           <div className="profile-username"><span>注册用户名</span><strong>{user?.username || "—"}</strong></div>
-          <div className="profile-provider-heading">第三方账号</div>
+          {!desktopMode && <><div className="profile-provider-heading">第三方账号</div>
           <div className="profile-provider-list">
             {profileProviders.map((provider) => {
               const identity = user?.identities.find((item) => item.provider === provider.id);
@@ -1717,12 +1753,12 @@ export default function Home() {
                 {identity ? <button type="button" className="profile-unlink-button" disabled={Boolean(profileBusy)} onClick={() => void unlinkProvider(provider)}>{profileBusy === provider.id ? "处理中…" : "解绑"}</button> : <button type="button" className="profile-link-button" disabled={Boolean(profileBusy) || !configured} title={!configured ? `尚未配置 ${provider.name} OAuth` : undefined} onClick={() => openOAuthPopup(provider)}>绑定</button>}
               </div>;
             })}
-          </div>
+          </div></>}
           {profileError && <div className="profile-error" role="alert">{profileError}</div>}
         </div>
       </DialogContent>
     </Dialog>
-    {showAuthModal && !user && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAuthModal(false); }}><section className="auth-card auth-modal-card" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title"><button type="button" className="auth-modal-close" aria-label="关闭" onClick={() => setShowAuthModal(false)}>×</button><div className="auth-sun">☀</div><h1 id="auth-modal-title">Little Sunshine</h1><p>{authMode === "login" ? "登录你的 Little Sunshine 账号" : "创建 Little Sunshine 账号"}</p>
+    {showAuthModal && !user && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAuthModal(false); }}><section className="auth-card auth-modal-card" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title"><button type="button" className="auth-modal-close" aria-label="关闭" onClick={() => setShowAuthModal(false)}>×</button><div className="auth-sun">☀</div><h1 id="auth-modal-title">Little Sunshine</h1><p>{desktopMode ? "使用远程账号登录" : authMode === "login" ? "登录你的 Little Sunshine 账号" : "创建 Little Sunshine 账号"}</p>
     {authMessage && <div className="auth-message">{authMessage}</div>}{authError && user === undefined && <button type="button" className="auth-secondary-button" onClick={() => window.location.reload()}>重新连接</button>}
       <form className="auth-form" onSubmit={async (event) => {
         event.preventDefault(); setAuthError(""); setAuthLoading(true);
@@ -1740,13 +1776,13 @@ export default function Home() {
         } catch (error) { setAuthError(error instanceof Error ? error.message : "请求失败，请稍后重试。"); }
         finally { setAuthLoading(false); }
       }}>
-        <Input required autoComplete="username" minLength={3} maxLength={32} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="用户名" />
-        <Input required type="password" autoComplete={authMode === "register" ? "new-password" : "current-password"} minLength={8} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码（至少 8 位）" />
+        <Input required autoComplete="username" minLength={desktopMode ? undefined : 3} maxLength={desktopMode ? 191 : 32} value={username} onChange={(event) => setUsername(event.target.value)} placeholder={desktopMode ? "用户名或邮箱" : "用户名"} />
+        <Input required type="password" autoComplete={authMode === "register" ? "new-password" : "current-password"} minLength={desktopMode ? undefined : 8} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码" />
         {authError && <div className="auth-error" role="alert">{authError}</div>}
         <button type="submit" className="github-login-button" disabled={authLoading}>{authLoading ? "处理中…" : authMode === "register" ? "注册并登录" : oauthPendingBinding ? "绑定并登录" : "登录"}</button>
       </form>
       <div className="auth-providers"><div className="auth-provider-divider"><span>或使用第三方账号</span></div><div className="auth-provider-icons">{oauthButtons.map((provider) => <button key={provider.id} type="button" className="auth-provider-icon-button" aria-label={`使用 ${provider.name} 授权`} onClick={() => openOAuthPopup(provider)}><span className="auth-provider-tooltip" aria-hidden="true">{provider.name}</span>{provider.id === "github" ? <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.54v-2.08c-3.1.68-3.75-1.32-3.75-1.32-.5-1.3-1.23-1.65-1.23-1.65-1.01-.69.08-.68.08-.68 1.12.08 1.7 1.15 1.7 1.15.99 1.69 2.6 1.2 3.23.92.1-.72.39-1.2.7-1.48-2.48-.28-5.09-1.24-5.09-5.51 0-1.22.44-2.21 1.15-2.99-.12-.28-.5-1.42.11-2.95 0 0 .94-.3 3.05 1.14a10.6 10.6 0 0 1 5.55 0c2.11-1.44 3.04-1.14 3.04-1.14.61 1.53.23 2.67.12 2.95.71.78 1.14 1.77 1.14 2.99 0 4.28-2.61 5.22-5.1 5.5.4.34.75 1.02.75 2.06v3.09c0 .3.2.65.76.54A11.1 11.1 0 0 0 12 .9Z" /></svg> : provider.id === "gitee" ? <span className="gitee-provider-mark">G</span> : provider.id === "gitlab" ? <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#FC6D26" d="m23.6004 9.5927-.0337-.0862L20.3.9814a.851.851 0 0 0-.3362-.405.8748.8748 0 0 0-.9997.0539.8748.8748 0 0 0-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 0 0-.29-.4412.8748.8748 0 0 0-.9997-.0537.8585.8585 0 0 0-.3362.4049L.4332 9.5015l-.0325.0862a6.0657 6.0657 0 0 0 2.0119 7.0105l.0113.0087.03.0213 4.976 3.7264 2.462 1.8633 1.4995 1.1321a1.0085 1.0085 0 0 0 1.2197 0l1.4995-1.1321 2.4619-1.8633 5.006-3.7489.0125-.01a6.0682 6.0682 0 0 0 2.0094-7.003z" /></svg> : provider.id === "google" ? <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.7c3.9-3.6 6-8.8 6-15Z"/><path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.8l-6.7-5.1c-1.8 1.2-4 1.9-6.8 1.9-5.2 0-9.6-3.5-11.2-8.2H5.9v5.2C9.3 39.6 16.1 44 24 44Z"/><path fill="#FBBC05" d="M12.8 27.8a12 12 0 0 1 0-7.6V15H5.9a20 20 0 0 0 0 18l6.9-5.2Z"/><path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.9-5.9C34.1 6 29.5 4 24 4 16.1 4 9.3 8.4 5.9 15l6.9 5.2c1.6-4.7 6-8.1 11.2-8.1Z"/></svg> : <span>{provider.name.slice(0, 1).toUpperCase()}</span>}</button>)}</div><small>授权后登录已有账号，或注册新账号并自动绑定</small></div>
-      <button type="button" className="auth-mode-button" onClick={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "没有账号？注册" : oauthPendingBinding ? "已有账号？绑定并登录" : "已有账号？登录"}</button>
+      {!desktopMode && <button type="button" className="auth-mode-button" onClick={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "没有账号？注册" : oauthPendingBinding ? "已有账号？绑定并登录" : "已有账号？登录"}</button>}
   </section></div>}
   </>;
 }

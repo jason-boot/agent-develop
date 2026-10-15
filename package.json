@@ -25,11 +25,18 @@
   "build": {
     "appId": "com.usagecopilot.desktop",
     "productName": "Usage Copilot",
+    "protocols": [
+      {
+        "name": "Usage Copilot Authentication",
+        "schemes": ["usagecopilot"]
+      }
+    ],
     "asar": true,
     "files": [
       "electron/**/*",
       "package.json",
-      "backend/database.example.json"
+      "backend/database.example.json",
+      "backend/desktop-auth.example.json"
     ],
     "extraResources": [
       {

@@ -8,17 +8,52 @@ const path = require("node:path");
 let serverProcess;
 let staticServer;
 let mainWindow;
+let desktopAppUrl;
+let pendingAuthProtocol;
 let shuttingDown = false;
 app.setName("Usage Copilot");
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+if (app.isPackaged) app.setAsDefaultProtocolClient("usagecopilot");
+else app.setAsDefaultProtocolClient("usagecopilot", process.execPath, [path.resolve(process.argv[1] || ".")]);
+
+function handleAuthProtocol(target) {
+  let authUrl;
+  try { authUrl = new URL(target); } catch (_) { return; }
+  if (authUrl.protocol !== "usagecopilot:") return;
+  if (!desktopAppUrl) { pendingAuthProtocol = target; return; }
+  const ticket = authUrl.searchParams.get("ticket");
+  if (!ticket) return;
+  const destination = new URL(desktopAppUrl);
+  destination.searchParams.set("desktop", "1");
+  destination.searchParams.set("desktopAuthTicket", ticket);
+  if (!mainWindow || mainWindow.isDestroyed()) { pendingAuthProtocol = target; return; }
+  mainWindow.show();
+  mainWindow.focus();
+  void mainWindow.loadURL(destination.toString());
+}
+
+app.on("open-url", (event, target) => { event.preventDefault(); handleAuthProtocol(target); });
+app.on("second-instance", (_event, commandLine) => {
+  const authProtocol = commandLine.find((argument) => argument.startsWith("usagecopilot://"));
+  if (authProtocol) handleAuthProtocol(authProtocol);
+  if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
+});
 
 function openConfigFolder() {
-  const configDirectory = app.getPath("userData");
+  const configDirectory = app.isPackaged ? app.getPath("userData") : path.join(app.getAppPath(), "backend", ".agent-data");
   fs.mkdirSync(configDirectory, { recursive: true });
   const databaseConfig = path.join(configDirectory, "database.json");
   const exampleConfig = path.join(app.getAppPath(), "backend", "database.example.json");
   if (!fs.existsSync(databaseConfig) && fs.existsSync(exampleConfig)) {
     fs.copyFileSync(exampleConfig, databaseConfig, fs.constants.COPYFILE_EXCL);
     try { fs.chmodSync(databaseConfig, 0o600); } catch (_) { /* Keep platform defaults if chmod is unavailable. */ }
+  }
+  const desktopAuthConfig = path.join(configDirectory, "desktop-auth.json");
+  const desktopAuthExample = path.join(app.getAppPath(), "backend", "desktop-auth.example.json");
+  if (!fs.existsSync(desktopAuthConfig) && fs.existsSync(desktopAuthExample)) {
+    fs.copyFileSync(desktopAuthExample, desktopAuthConfig, fs.constants.COPYFILE_EXCL);
+    try { fs.chmodSync(desktopAuthConfig, 0o600); } catch (_) { /* Keep platform defaults if chmod is unavailable. */ }
   }
   shell.openPath(configDirectory);
 }
@@ -88,7 +123,10 @@ function startStaticProxy(frontendDirectory, backendPort) {
         return;
       }
       const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
-      const filePath = path.resolve(frontendDirectory, relativePath);
+      const requestedPath = path.resolve(frontendDirectory, relativePath);
+      const filePath = pathname !== "/" && pathname.endsWith("/")
+        ? path.join(requestedPath, "index.html")
+        : path.extname(requestedPath) ? requestedPath : `${requestedPath}.html`;
       if (filePath !== frontendDirectory && !filePath.startsWith(`${frontendDirectory}${path.sep}`)) {
         response.writeHead(403).end("Forbidden");
         return;
@@ -142,6 +180,7 @@ async function createWindow() {
   } else {
     const port = await choosePort();
     const resourceRoot = process.resourcesPath;
+    const desktopUrl = new URL(await startStaticProxy(path.join(resourceRoot, "frontend"), port));
     const backendRoot = path.join(resourceRoot, "backend-standalone", "backend");
     const serverPath = path.join(backendRoot, "server.js");
     const environment = {
@@ -151,6 +190,7 @@ async function createWindow() {
       ELECTRON_RUN_AS_NODE: "1",
       HOSTNAME: "127.0.0.1",
       PORT: String(port),
+      DESKTOP_APP_URL: desktopUrl.origin,
       NODE_ENV: "production",
     };
     serverProcess = spawn(process.execPath, [serverPath], {
@@ -161,7 +201,6 @@ async function createWindow() {
     });
     serverProcess.on("error", () => {});
     await waitForServer(`http://127.0.0.1:${port}/api/health`);
-    const desktopUrl = new URL(await startStaticProxy(path.join(resourceRoot, "frontend"), port));
     desktopUrl.searchParams.set("desktop", "1");
     url = desktopUrl.toString();
   }
@@ -176,13 +215,20 @@ async function createWindow() {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   mainWindow.webContents.setWindowOpenHandler(({ url: target }) => {
-    if (target.startsWith("https://")) shell.openExternal(target);
+    const externalUrl = new URL(target);
+    if (externalUrl.protocol === "https:" || (externalUrl.protocol === "http:" && ["localhost", "127.0.0.1"].includes(externalUrl.hostname))) shell.openExternal(target);
     return { action: "deny" };
   });
+  const appOrigin = new URL(url).origin;
+  desktopAppUrl = url;
   mainWindow.webContents.on("will-navigate", (event, target) => {
-    if (!target.startsWith(url)) event.preventDefault();
+    if (new URL(target).origin !== appOrigin) event.preventDefault();
   });
   await mainWindow.loadURL(url);
+  const initialAuthProtocol = process.argv.find((argument) => argument.startsWith("usagecopilot://"));
+  const initialHandoff = pendingAuthProtocol || initialAuthProtocol;
+  pendingAuthProtocol = undefined;
+  if (initialHandoff) handleAuthProtocol(initialHandoff);
 }
 
 app.whenReady().then(async () => {
