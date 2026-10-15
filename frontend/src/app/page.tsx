@@ -568,6 +568,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     void getStoredProjectDirectories(userId).then((storedProjects) => {
       if (cancelled) return;
       for (const project of storedProjects) projectDirectoriesRef.current.set(project.id, project.handle);
+      setProjects(storedProjects.map(({ id, name }) => ({ id, name })));
     }).catch((e) => {
       if (!cancelled) setProjectError(e instanceof Error ? e.message : "读取已保存的项目目录失败。");
     }).finally(() => { if (!cancelled) setProjectDirectoryStorageReady(true); });
@@ -1370,9 +1371,11 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
 
   const projectConversationGroups = (() => {
     const groups = new Map<string, { id: string; name: string; conversations: Conversation[] }>();
+    for (const project of projects) groups.set(project.id, { id: project.id, name: project.name, conversations: [] });
     for (const conversation of conversations) {
       if (!conversation.projectId) continue;
       const group = groups.get(conversation.projectId) || { id: conversation.projectId, name: conversation.projectName || "项目", conversations: [] };
+      if (!group.name || group.name === "项目") group.name = conversation.projectName || "项目";
       group.conversations.push(conversation);
       groups.set(group.id, group);
     }
