@@ -1585,6 +1585,7 @@ export default function Home() {
     { id: "github", name: "GitHub" },
     { id: "gitee", name: "Gitee" },
     { id: "google", name: "Google" },
+    { id: "gitlab", name: "GitLab" },
   ];
   useEffect(() => {
     let cancelled = false;

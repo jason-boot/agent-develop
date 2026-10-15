@@ -46,6 +46,22 @@
       "usernameField": "email",
       "displayNameField": "name",
       "avatarField": "picture"
+    },
+    "gitlab": {
+      "name": "GitLab",
+      "clientId": "请填写 GitLab OAuth 应用的 Application ID",
+      "clientSecret": "请填写 GitLab OAuth 应用的 Secret",
+      "authorizationUrl": "https://gitlab.com/oauth/authorize",
+      "tokenUrl": "https://gitlab.com/oauth/token",
+      "userInfoUrl": "https://gitlab.com/api/v4/user",
+      "scope": "read_user",
+      "callbackUrl": "https://请替换为你的域名/api/auth/oauth/gitlab/callback",
+      "tokenRequestFormat": "form",
+      "tokenGrantType": "authorization_code",
+      "userIdField": "id",
+      "usernameField": "username",
+      "displayNameField": "name",
+      "avatarField": "avatar_url"
     }
   }
 }
