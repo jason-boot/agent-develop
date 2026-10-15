@@ -158,6 +158,7 @@ export function createOAuthLoginUrl(request: Request, providerId: string) {
   authorizeUrl.searchParams.set("response_type", "code");
   authorizeUrl.searchParams.set("scope", provider.scope);
   authorizeUrl.searchParams.set("state", state);
+  authorizeUrl.searchParams.set("prompt", "select_account");
   const response = redirectResponse(authorizeUrl);
   response.headers.append("Set-Cookie", `little_sunshine_oauth_state_${providerId}=${state}; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=600${secureCookie(request) ? "; Secure" : ""}`);
   response.headers.append("Set-Cookie", `little_sunshine_oauth_popup_${providerId}=${requestUrlPopup(request) ? "1" : "0"}; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=600${secureCookie(request) ? "; Secure" : ""}`);
@@ -265,6 +266,7 @@ export function createDesktopOAuthUrl(request: Request, providerId: string) {
     authorize.searchParams.set("state", state);
     authorize.searchParams.set("code_challenge", challenge);
     authorize.searchParams.set("code_challenge_method", "S256");
+    authorize.searchParams.set("prompt", "select_account");
     desktopOAuthStates.set(state, { provider: providerId, verifier, createdAt: Date.now() });
     return Response.json({ authorizationUrl: authorize.toString() });
   } catch (error) {
