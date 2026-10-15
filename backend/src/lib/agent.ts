@@ -1,6 +1,6 @@
 import type { ChatReply, DailyModelUsage, ProjectFileChange, ToolTrace, UsageChartSpec, UsageRecord, UsageSummary } from "@little-sunshine/shared/types";
-import { callUsageMcpTool, connectUsageMcpClient } from "@/lib/usage-mcp";
-import { listExternalMcpServers } from "@/lib/external-mcp-config";
+import { callUsageMcpTool, connectLocalUsageMcpClient, connectUsageMcpClient } from "@/lib/usage-mcp";
+import { isDesktopMcpRuntime, listExternalMcpServers } from "@/lib/external-mcp-config";
 import { ModelServiceError, requestModelAgentTurn, type AgentImageInput, type AgentMessage, type AgentToolCall, type AgentToolDefinition, type ModelConfig } from "@/lib/model-config";
 
 const emptySummary: UsageSummary = {
@@ -108,9 +108,11 @@ export async function answerQuestion(
       }
     }
     const externalServers = await listExternalMcpServers();
-    for (const server of externalServers.filter((item) => item.enabled)) {
+    for (const server of externalServers.filter((item) => item.enabled && (item.transport !== "stdio" || isDesktopMcpRuntime()))) {
       try {
-        const remote = await connectUsageMcpClient(new URL(server.url), server.token);
+        const remote = server.transport === "stdio"
+          ? await connectLocalUsageMcpClient(server)
+          : await connectUsageMcpClient(new URL(server.url), server.token);
         clients.push(remote);
         const { tools: remoteTools } = await remote.client.listTools();
         for (const tool of remoteTools) {

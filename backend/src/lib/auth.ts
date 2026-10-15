@@ -307,7 +307,7 @@ export async function completeOAuthLogin(request: Request, providerId: string) {
   }
 
   const existingUser = await findUserByIdentity(providerId, identity.providerUserId);
-  if (existingUser?.isActive) return redirect("/", existingUser);
+  if (existingUser?.isActive) return redirect("/?newSession=1", existingUser);
   return setPendingIdentity(redirect("/?auth=provider-unlinked"));
 }
 

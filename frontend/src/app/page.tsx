@@ -28,7 +28,7 @@ type ProviderModelRow = { displayName: string; upstreamModel: string };
 type ModelVendor = "aliyun-bailian" | "custom";
 type BailianRegion = "beijing" | "singapore" | "hong-kong" | "tokyo" | "frankfurt" | "virginia";
 type McpTool = { name: string; title?: string; description?: string; enabled: boolean; readOnly?: boolean; destructive?: boolean; manuallyAllowed?: boolean; canEnable?: boolean };
-type ExternalMcpServer = { id: string; name: string; url: string; enabled: boolean; hasToken: boolean };
+type ExternalMcpServer = { id: string; name: string; transport: "http" | "stdio"; url: string; command: string; args: string[]; cwd: string; envKeys: string[]; enabled: boolean; hasToken: boolean; hasEnv: boolean };
 type StoredProjectDirectory = { id: string; name: string; handle: FileSystemDirectoryHandle; ownerId?: number; storageKey?: string };
 
 async function readApiJson<T>(response: Response): Promise<T> {
@@ -434,7 +434,7 @@ function DailyModelTrendChart({ points, chartSpec, from, to }: { points: DailyMo
   </section>;
 }
 
-function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfile, onLogout }: { authenticated: boolean; userId?: number; username?: string; onRequireLogin: () => void; onOpenProfile: () => void; onLogout: () => void }) {
+function ChatApp({ authenticated, userId, username, startFreshSession, onRequireLogin, onOpenProfile, onLogout }: { authenticated: boolean; userId?: number; username?: string; startFreshSession: boolean; onRequireLogin: () => void; onOpenProfile: () => void; onLogout: () => void }) {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([{ role: "assistant", content: welcome }]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -458,6 +458,7 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [projectError, setProjectError] = useState("");
   const [projectDirectoryStorageReady, setProjectDirectoryStorageReady] = useState(false);
+  const [canOpenLocalProject, setCanOpenLocalProject] = useState(false);
   const [applyingProjectChanges, setApplyingProjectChanges] = useState(false);
   const [appliedProjectChangeIndexes, setAppliedProjectChangeIndexes] = useState<number[]>([]);
   const [loading, setLoading] = useState(false);
@@ -495,6 +496,7 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
   const [modelToDelete, setModelToDelete] = useState<ModelProfile | null>(null);
   const [modelDeleting, setModelDeleting] = useState(false);
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
+  const [externalMcpRuntime, setExternalMcpRuntime] = useState<"web" | "desktop">("web");
   const [externalMcpServers, setExternalMcpServers] = useState<ExternalMcpServer[]>([]);
   const [externalMcpTools, setExternalMcpTools] = useState<Record<string, McpTool[]>>({});
   const [externalMcpLoading, setExternalMcpLoading] = useState("");
@@ -505,14 +507,23 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
   const [externalMcpName, setExternalMcpName] = useState("");
   const [externalMcpUrl, setExternalMcpUrl] = useState("");
   const [externalMcpToken, setExternalMcpToken] = useState("");
+  const [externalMcpTransport, setExternalMcpTransport] = useState<"http" | "stdio">("http");
+  const [externalMcpCommand, setExternalMcpCommand] = useState("");
+  const [externalMcpArgsJson, setExternalMcpArgsJson] = useState("[]");
+  const [externalMcpEnvJson, setExternalMcpEnvJson] = useState("{}");
+  const [externalMcpCwd, setExternalMcpCwd] = useState("");
   const [externalMcpTesting, setExternalMcpTesting] = useState(false);
   const [externalMcpSaving, setExternalMcpSaving] = useState(false);
   const [externalMcpTested, setExternalMcpTested] = useState(false);
   const [externalMcpPreview, setExternalMcpPreview] = useState<McpTool[]>([]);
   const [externalMcpExpandedId, setExternalMcpExpandedId] = useState("");
   const selectedModel = models.find((model) => model.id === selectedModelId);
+  const agnesPresetModels = [
+    { name: "Agnes 3.0 Flash", model: "agnes-3.0-flash" },
+    { name: "Agnes 2.5 Flash", model: "agnes-2.5-flash" },
+  ].filter((preset) => !models.some((model) => model.vendor.toLocaleLowerCase() === "agnes ai" && model.model === preset.model));
   const existingVendors = [...new Set(models.map((model) => model.vendor).filter((vendor) => vendor && vendor !== "custom" && vendor !== "aliyun-bailian"))];
-  const availableVendors = ["阿里云百炼", "DeepSeek", "智谱AI", ...existingVendors.filter((vendor) => !["deepseek", "智谱ai", "智谱"].includes(vendor.toLocaleLowerCase()))];
+  const availableVendors = ["阿里云百炼", "DeepSeek", "智谱AI", "Agnes AI", ...existingVendors.filter((vendor) => !["deepseek", "智谱ai", "智谱", "agnes ai"].includes(vendor.toLocaleLowerCase()))];
   const filteredVendors = availableVendors.filter((vendor) => vendor.toLocaleLowerCase().includes(vendorSearch.trim().toLocaleLowerCase()));
   const canDiscoverModels = Boolean((modelApiKey.trim() || credentialSourceModelId) && modelListUrl.trim());
   const modelGroups = models.reduce<Record<string, ModelProfile[]>>((groups, model) => {
@@ -530,6 +541,12 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
   messagesRef.current = messages;
   conversationsRef.current = conversations;
+
+  useEffect(() => {
+    const hostname = window.location.hostname.toLowerCase();
+    const desktopBuild = new URLSearchParams(window.location.search).get("desktop") === "1";
+    setCanOpenLocalProject(desktopBuild || window.location.protocol === "https:" || hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]");
+  }, []);
 
   useEffect(() => {
     projectDirectoriesRef.current.clear();
@@ -555,7 +572,12 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
         if (!response.ok) throw new Error(data.error || "读取会话失败。");
         const saved = data.conversations || [];
         setConversations(saved);
-        if (saved.length) {
+        if (startFreshSession) {
+          setActiveConversationId("");
+          setConversationProjectId("");
+          setProjectConversationMode(false);
+          setMessages([{ role: "assistant", content: welcome }]);
+        } else if (saved.length) {
           const detailResponse = await fetch(`/api/conversations/${encodeURIComponent(saved[0].id)}`);
           const detail = await readApiJson<{ conversation?: Conversation; error?: string }>(detailResponse);
           if (!detailResponse.ok || !detail.conversation) throw new Error(detail.error || "读取会话失败。");
@@ -589,7 +611,7 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
       } catch (e) { setError(e instanceof Error ? e.message : "读取本地会话失败。"); }
       finally { setConversationStorageReady(true); }
     })();
-  }, [authenticated]);
+  }, [authenticated, startFreshSession]);
   useEffect(() => {
     if (!openConversationMenuId && !openProjectMenuId) return;
     const closeMenuOutside = (event: PointerEvent) => {
@@ -1083,10 +1105,18 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
     setModelApiKey(""); setCredentialSourceModelId(""); setModelListUrl(model?.modelsUrl || ""); setModelFeedback(""); setProviderModels([]); setProviderModelPickerIndex(null); setProviderModelSearch(""); setProviderModelRows([{ displayName: model?.name || "", upstreamModel: model?.model || "" }]); setModelModalOpen(true);
   }
 
+  function addAgnesPreset(preset: { name: string; model: string }) {
+    setModelMenuOpen(false);
+    openModelModal();
+    updateProviderName("Agnes AI");
+    setProviderModelRows([{ displayName: preset.name, upstreamModel: preset.model }]);
+  }
+
   function updateProviderName(value: string) {
     const isBailian = value === "阿里云百炼" || value === "aliyun-bailian";
     const isDeepSeek = value.trim().toLocaleLowerCase() === "deepseek";
     const isZhipu = ["智谱ai", "智谱"].includes(value.trim().toLocaleLowerCase());
+    const isAgnes = value.trim().toLocaleLowerCase() === "agnes ai";
     setModelProviderName(isBailian ? "阿里云百炼" : isZhipu ? "智谱AI" : value);
     setModelVendor(isBailian ? "aliyun-bailian" : "custom");
     setProviderModels([]);
@@ -1094,6 +1124,16 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
     if (isBailian) setModelListUrl(bailianModelsUrl(bailianRegion, bailianWorkspaceId));
     else if (isDeepSeek) setModelListUrl("https://api.deepseek.com/models");
     else if (isZhipu) { setModelBaseUrl("https://open.bigmodel.cn/api/paas/v4"); setModelListUrl("https://open.bigmodel.cn/api/paas/v4/models"); setModelProtocol("chat"); }
+    else if (isAgnes) {
+      setModelBaseUrl("https://apihub.agnes-ai.com/v1");
+      setModelFullAddress(false);
+      setModelProtocol("chat");
+      setModelListUrl("");
+      setProviderModelRows([
+        { displayName: "Agnes 3.0 Flash", upstreamModel: "agnes-3.0-flash" },
+        { displayName: "Agnes 2.5 Flash", upstreamModel: "agnes-2.5-flash" },
+      ]);
+    }
     else if (modelVendor === "aliyun-bailian" || ["deepseek", "智谱ai", "智谱"].includes(modelProviderName.trim().toLocaleLowerCase())) setModelListUrl("");
   }
 
@@ -1216,9 +1256,10 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
     setMcpModalOpen(true);
     try {
       const serverResponse = await fetch("/api/mcp/servers");
-      const serverData = await serverResponse.json() as { servers?: ExternalMcpServer[]; error?: string };
+      const serverData = await serverResponse.json() as { servers?: ExternalMcpServer[]; runtime?: "web" | "desktop"; error?: string };
       if (!serverResponse.ok) throw new Error(serverData.error || "读取外部 MCP 配置失败。");
       setExternalMcpServers(serverData.servers || []);
+      setExternalMcpRuntime(serverData.runtime === "desktop" ? "desktop" : "web");
     } catch (e) {
       setExternalMcpError(e instanceof Error ? e.message : "读取外部 MCP 配置失败。");
     }
@@ -1226,14 +1267,24 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
 
   function openExternalMcpEditor() {
     setExternalMcpName(""); setExternalMcpUrl(""); setExternalMcpToken("");
+    setExternalMcpTransport("http"); setExternalMcpCommand(""); setExternalMcpArgsJson("[]"); setExternalMcpEnvJson("{}"); setExternalMcpCwd("");
     setExternalMcpTested(false); setExternalMcpPreview([]); setExternalMcpError("");
     setExternalMcpEditorOpen(true);
+  }
+
+  function localMcpDraft() {
+    const args = JSON.parse(externalMcpArgsJson) as unknown;
+    const env = JSON.parse(externalMcpEnvJson) as unknown;
+    if (!Array.isArray(args) || args.some((item) => typeof item !== "string")) throw new Error("启动参数必须是字符串数组 JSON，例如 [\"--directory\", \"/path\"]。");
+    if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((item) => typeof item !== "string")) throw new Error("环境变量必须是字符串键值 JSON 对象，例如 {\"API_KEY\": \"...\"}。");
+    return { command: externalMcpCommand, args, env, cwd: externalMcpCwd };
   }
 
   async function testExternalMcp() {
     setExternalMcpTesting(true); setExternalMcpError(""); setExternalMcpTested(false);
     try {
-      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "test", url: externalMcpUrl, token: externalMcpToken }) });
+      const connection = externalMcpTransport === "stdio" ? { transport: "stdio", ...localMcpDraft() } : { transport: "http", url: externalMcpUrl, token: externalMcpToken };
+      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "test", ...connection }) });
       const data = await readApiJson<{ tools?: McpTool[]; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "MCP 连接测试失败。");
       setExternalMcpPreview(data.tools || []); setExternalMcpTested(true);
@@ -1244,7 +1295,8 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
   async function saveExternalMcp() {
     setExternalMcpSaving(true); setExternalMcpError("");
     try {
-      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save", name: externalMcpName, url: externalMcpUrl, token: externalMcpToken }) });
+      const connection = externalMcpTransport === "stdio" ? { transport: "stdio", ...localMcpDraft() } : { transport: "http", url: externalMcpUrl, token: externalMcpToken };
+      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save", name: externalMcpName, ...connection }) });
       const data = await readApiJson<{ server?: ExternalMcpServer; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "添加 MCP 服务器失败。");
       if (data.server) setExternalMcpServers((items) => [...items, data.server!]);
@@ -1322,7 +1374,7 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><SunIcon /></div><div><strong>Little Sunshine</strong></div></div>
       <button className="new-chat" disabled={loading} onClick={startNewConversation}><svg className="new-chat-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg><span>开启新会话</span></button>
-      <button type="button" className="new-project" disabled={loading || !projectDirectoryStorageReady} onClick={() => void selectProjectDirectory()}><FolderOpen aria-hidden="true" /><span>打开本地项目(本地文件夹)</span></button>
+      {canOpenLocalProject && <button type="button" className="new-project" disabled={loading || !projectDirectoryStorageReady} onClick={() => void selectProjectDirectory()}><FolderOpen aria-hidden="true" /><span>打开本地项目(本地文件夹)</span></button>}
       {projectConversationGroups.length > 0 && <div className="project-list"><div className="project-list-heading">项目</div>{projectConversationGroups.map((group) => <div className="project-chat-group" key={group.id}><div className="project-list-row"><div className="project-list-select" title={group.name}><FolderPlus aria-hidden="true" /><span>{group.name}</span></div><ProjectMenuButton projectName={group.name} open={openProjectMenuId === group.id} disabled={loading || projectDeleting || conversationDeleting || conversationRenaming} onToggle={() => { setOpenConversationMenuId(""); setOpenProjectMenuId(openProjectMenuId === group.id ? "" : group.id); }} onDelete={() => requestDeleteProject(group)} /><button type="button" className="project-new-chat" aria-label={`在项目 ${group.name} 下新建会话`} title="在此项目下新建会话" disabled={loading || projectDeleting} onClick={() => startProjectConversation(group.id)}><Plus aria-hidden="true" /></button></div>{sortConversations(group.conversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming || projectDeleting} menuOpen={openConversationMenuId === conversation.id} className="project-conversation-item" onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />)}</div>)}</div>}
       {projectError && <div className="project-error" role="alert">{projectError}</div>}
       <div className="conversation-history">
@@ -1354,7 +1406,7 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
             {pendingImages.length > 0 && <div className="composer-image-previews">{pendingImages.map((image) => <div className="composer-image-preview" key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" aria-label={`移除图片 ${image.name}`} title="移除图片" onClick={() => setPendingImages((items) => items.filter((item) => item.id !== image.id))}>×</button></div>)}</div>}
             {selectedProject && <div className="project-chat-context active"><FolderPlus aria-hidden="true" /><span>项目</span><span className="project-context-value">{selectedProject.name}</span><small>本轮可访问此项目</small></div>}
             <Textarea className="composer-textarea" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="给 Little Sunshine 发送消息" rows={1} />
-            <div className="composer-tools"><span className="composer-hint">↵ 发送 · Shift + Enter 换行</span><div className="composer-model-tools"><input ref={imageInputRef} className="image-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={!authenticated} onChange={(event) => { void addImageFiles(event.target.files); event.target.value = ""; }} /><Button type="button" variant="ghost" size="icon" className="attach-image-button" aria-label="上传图片" data-tooltip="上传图片（最多 4 张，每张不超过 4 MB）" disabled={!authenticated || loading || pendingImages.length >= 4} onClick={() => imageInputRef.current?.click()}><Paperclip aria-hidden="true" /></Button><Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}><PopoverTrigger asChild><Button type="button" variant="outline" className="model-select-wrap" aria-label="选择聊天模型" aria-haspopup="dialog" aria-expanded={modelMenuOpen} disabled={!authenticated}><span>◈</span><strong>{selectedModel ? selectedModel.name : "未选择模型"}</strong><ArrowDown aria-hidden="true" className="model-trigger-chevron" /></Button></PopoverTrigger>{modelMenuOpen && <PopoverContent side="top" align="start" sideOffset={8} className="model-dropdown" role="menu" aria-label="选择模型"><div className="model-dropdown-heading"><span>选择模型</span><Button type="button" variant="ghost" size="sm" className="model-dropdown-add" role="menuitem" onClick={() => { setModelMenuOpen(false); openModelModal(); }}><Plus aria-hidden="true" />添加自定义模型</Button></div>{Object.entries(modelGroups).map(([vendor, vendorModels]) => <div className="model-dropdown-group" key={vendor}><div className="model-dropdown-group-heading">{modelVendorLabel(vendor)}</div>{vendorModels.map((model) => <div className={`model-dropdown-row ${selectedModelId === model.id ? "selected" : ""}`} key={model.id}><Button type="button" variant="ghost" className="model-option-main" role="menuitemradio" aria-checked={selectedModelId === model.id} onClick={() => void chooseModel(model.id)}><span><strong>{model.name}</strong><small>{model.model} · {model.protocol.toUpperCase()}</small></span></Button><div className="model-option-actions"><Button type="button" variant="ghost" size="icon" className="model-action-button" title={`编辑 ${model.name}`} aria-label={`编辑 ${model.name}`} onClick={() => openModelModal(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></Button><Button type="button" variant="ghost" size="icon" className="model-action-button delete" title={`删除 ${model.name}`} aria-label={`删除 ${model.name}`} onClick={() => void deleteModel(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></Button></div></div>)}</div>)}</PopoverContent>}</Popover><Button type="submit" variant="default" size="icon" className="composer-send-button" disabled={(!input.trim() && pendingImages.length === 0) || loading} aria-label="发送"><ArrowUp aria-hidden="true" /></Button></div></div>
+            <div className="composer-tools"><span className="composer-hint">↵ 发送 · Shift + Enter 换行</span><div className="composer-model-tools"><input ref={imageInputRef} className="image-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={!authenticated} onChange={(event) => { void addImageFiles(event.target.files); event.target.value = ""; }} /><Button type="button" variant="ghost" size="icon" className="attach-image-button" aria-label="上传图片" data-tooltip="上传图片（最多 4 张，每张不超过 4 MB）" disabled={!authenticated || loading || pendingImages.length >= 4} onClick={() => imageInputRef.current?.click()}><Paperclip aria-hidden="true" /></Button><Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}><PopoverTrigger asChild><Button type="button" variant="outline" className="model-select-wrap" aria-label="选择聊天模型" aria-haspopup="dialog" aria-expanded={modelMenuOpen} disabled={!authenticated}><span>◈</span><strong>{selectedModel ? selectedModel.name : "未选择模型"}</strong><ArrowDown aria-hidden="true" className="model-trigger-chevron" /></Button></PopoverTrigger>{modelMenuOpen && <PopoverContent side="top" align="start" sideOffset={8} className="model-dropdown" role="menu" aria-label="选择模型"><div className="model-dropdown-heading"><span>选择模型</span><Button type="button" variant="ghost" size="sm" className="model-dropdown-add" role="menuitem" onClick={() => { setModelMenuOpen(false); openModelModal(); }}><Plus aria-hidden="true" />添加自定义模型</Button></div>{Object.entries(modelGroups).map(([vendor, vendorModels]) => <div className="model-dropdown-group" key={vendor}><div className="model-dropdown-group-heading">{modelVendorLabel(vendor)}</div>{vendorModels.map((model) => <div className={`model-dropdown-row ${selectedModelId === model.id ? "selected" : ""}`} key={model.id}><Button type="button" variant="ghost" className="model-option-main" role="menuitemradio" aria-checked={selectedModelId === model.id} onClick={() => void chooseModel(model.id)}><span><strong>{model.name}</strong><small>{model.model} · {model.protocol.toUpperCase()}</small></span></Button><div className="model-option-actions"><Button type="button" variant="ghost" size="icon" className="model-action-button" title={`编辑 ${model.name}`} aria-label={`编辑 ${model.name}`} onClick={() => openModelModal(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></Button><Button type="button" variant="ghost" size="icon" className="model-action-button delete" title={`删除 ${model.name}`} aria-label={`删除 ${model.name}`} onClick={() => void deleteModel(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></Button></div></div>)}</div>)}{agnesPresetModels.length > 0 && <div className="model-dropdown-group"><div className="model-dropdown-group-heading">Agnes AI · 内置模型（需配置 API Key）</div>{agnesPresetModels.map((preset) => <div className="model-dropdown-row" key={preset.model}><Button type="button" variant="ghost" className="model-option-main" role="menuitem" onClick={() => addAgnesPreset(preset)}><span><strong>{preset.name}</strong><small>{preset.model} · CHAT</small></span></Button><Button type="button" variant="outline" size="sm" onClick={() => addAgnesPreset(preset)}>配置</Button></div>)}</div>}</PopoverContent>}</Popover><Button type="submit" variant="default" size="icon" className="composer-send-button" disabled={(!input.trim() && pendingImages.length === 0) || loading} aria-label="发送"><ArrowUp aria-hidden="true" /></Button></div></div>
           </form>{error && <div className="error-banner">{error}<button onClick={() => setError("")}>×</button></div>}</div>
         </section>
 
@@ -1367,8 +1419,8 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
         <div className="external-mcp-toolbar"><span>未标记只读的工具需要你手动授权；声明为有破坏性的工具仍不可用。</span><Button type="button" variant="outline" size="sm" onClick={openExternalMcpEditor}><Plus aria-hidden="true" />添加 MCP</Button></div>
         {externalMcpError && <div role="alert" className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{externalMcpError}</div>}
         {externalMcpServers.length ? <div className="mcp-tools-list">{externalMcpServers.map((server) => <Card className="mcp-tool-card external-mcp-card" key={server.id}>
-          <div className="mcp-tool-card-heading"><div className="external-mcp-server-title"><strong>{server.name}</strong><small>{server.hasToken ? "已配置认证" : "未配置认证"}</small></div><div className="external-mcp-server-actions"><Switch checked={server.enabled} aria-label={`${server.enabled ? "禁用" : "启用"}服务器 ${server.name}`} title={server.enabled ? "服务器已启用" : "服务器已禁用"} disabled={externalMcpUpdating === server.id} onCheckedChange={() => void toggleExternalMcpServer(server)} /><Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground hover:bg-red-50 hover:text-red-600" title={`删除 ${server.name}`} aria-label={`删除 ${server.name}`} onClick={() => void deleteExternalMcpServer(server)}><Trash2 aria-hidden="true" /></Button></div></div>
-          <code>{server.url}</code><Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => { if (externalMcpExpandedId === server.id) setExternalMcpExpandedId(""); else { setExternalMcpExpandedId(server.id); if (!externalMcpTools[server.id]) void loadExternalMcpTools(server); } }}>{externalMcpExpandedId === server.id ? "收起工具" : "查看工具"}</Button>
+          <div className="mcp-tool-card-heading"><div className="external-mcp-server-title"><strong>{server.name}</strong><small>{server.transport === "stdio" ? server.hasEnv ? "本地命令 · 已配置环境变量" : "本地 stdio" : server.hasToken ? "已配置认证" : "未配置认证"}</small></div><div className="external-mcp-server-actions"><Switch checked={server.enabled} aria-label={`${server.enabled ? "禁用" : "启用"}服务器 ${server.name}`} title={server.enabled ? "服务器已启用" : "服务器已禁用"} disabled={externalMcpUpdating === server.id} onCheckedChange={() => void toggleExternalMcpServer(server)} /><Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground hover:bg-red-50 hover:text-red-600" title={`删除 ${server.name}`} aria-label={`删除 ${server.name}`} onClick={() => void deleteExternalMcpServer(server)}><Trash2 aria-hidden="true" /></Button></div></div>
+          <code>{server.transport === "stdio" ? [server.command, ...server.args].join(" ") : server.url}</code>{server.transport === "stdio" && server.cwd && <small>工作目录：{server.cwd}</small>}<Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => { if (externalMcpExpandedId === server.id) setExternalMcpExpandedId(""); else { setExternalMcpExpandedId(server.id); if (!externalMcpTools[server.id]) void loadExternalMcpTools(server); } }}>{externalMcpExpandedId === server.id ? "收起工具" : "查看工具"}</Button>
           {externalMcpExpandedId === server.id && <div className="external-mcp-tool-list">{externalMcpLoading === server.id ? <small>正在读取工具…</small> : (externalMcpTools[server.id] || []).length ? externalMcpTools[server.id].map((tool) => <div className="external-mcp-tool" key={tool.name}><div><strong>{tool.title || tool.name}</strong><small>{tool.destructive ? "服务器标记为有破坏性，已禁止" : tool.readOnly ? tool.description || tool.name : tool.manuallyAllowed ? `已手动授权 · ${tool.description || tool.name}` : `未标记为只读 · ${tool.description || tool.name}`}</small></div>{tool.canEnable ? <Switch checked={tool.enabled} aria-label={`${tool.enabled ? "禁用" : tool.readOnly ? "启用" : "手动授权并启用"}${tool.title || tool.name}`} title={tool.readOnly ? (tool.enabled ? "禁用工具" : "启用工具") : (tool.enabled ? "撤销授权并禁用" : "手动授权并启用")} disabled={externalMcpUpdating === server.id + ":" + tool.name} onCheckedChange={() => void toggleExternalMcpTool(server, tool)} /> : <span className="external-mcp-unsafe">不可用</span>}</div>) : <small>服务器没有提供工具。</small>}</div>}
         </Card>)}</div> : <div className="mcp-tools-state">还没有外部 MCP 服务器，点击“添加 MCP”开始配置。</div>}
       </div>
@@ -1378,21 +1430,21 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
       <DialogContent className="max-h-[90vh] max-w-[500px] overflow-y-auto border-zinc-200 bg-white p-6 text-zinc-900 shadow-2xl sm:max-w-[500px]" showCloseButton={false}>
         <div className="flex items-start justify-between gap-4">
           <DialogHeader className="space-y-1 text-left">
-            <DialogTitle className="text-xl font-semibold tracking-tight">添加外部 MCP</DialogTitle>
-            <DialogDescription>连接外部服务器并检查只读工具。</DialogDescription>
+            <DialogTitle className="text-xl font-semibold tracking-tight">添加 MCP</DialogTitle>
+            <DialogDescription>{externalMcpRuntime === "desktop" ? "连接远程 HTTP 服务，或启动本机 MCP 命令。" : "连接远程 Streamable HTTP MCP 服务。"}</DialogDescription>
           </DialogHeader>
           <DialogClose asChild><Button type="button" variant="ghost" size="icon" className="-mr-2 -mt-2 size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none outline-none hover:bg-transparent hover:text-zinc-900 focus-visible:border-transparent focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0" aria-label="关闭"><X className="size-4" /></Button></DialogClose>
         </div>
         <div className="space-y-4">
+          {externalMcpRuntime === "desktop" && <div className="space-y-2"><Label>MCP 类型</Label><div className="flex gap-2"><Button type="button" variant={externalMcpTransport === "http" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("http"); setExternalMcpTested(false); }}>远程 HTTP</Button><Button type="button" variant={externalMcpTransport === "stdio" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("stdio"); setExternalMcpTested(false); }}>本地命令</Button></div></div>}
           <div className="space-y-2"><Label htmlFor="external-mcp-name">名称</Label><Input id="external-mcp-name" value={externalMcpName} onChange={(event) => { setExternalMcpName(event.target.value); setExternalMcpTested(false); }} placeholder="例如：项目文档 MCP" /></div>
-          <div className="space-y-2"><Label htmlFor="external-mcp-url">服务器 URL</Label><Input id="external-mcp-url" value={externalMcpUrl} onChange={(event) => { setExternalMcpUrl(event.target.value); setExternalMcpTested(false); }} placeholder="https://example.com/mcp" /></div>
-          <div className="space-y-2"><Label htmlFor="external-mcp-token">Bearer Token（可选）</Label><Input id="external-mcp-token" type="password" autoComplete="new-password" value={externalMcpToken} onChange={(event) => { setExternalMcpToken(event.target.value); setExternalMcpTested(false); }} placeholder="需要认证时填写" /></div>
-          <p className="text-xs leading-relaxed text-muted-foreground">访问令牌保存在本机配置文件中，不会返回到页面。只读限制会拒绝未声明为只读的工具。</p>
+          {externalMcpTransport === "http" ? <><div className="space-y-2"><Label htmlFor="external-mcp-url">服务器 URL</Label><Input id="external-mcp-url" value={externalMcpUrl} onChange={(event) => { setExternalMcpUrl(event.target.value); setExternalMcpTested(false); }} placeholder="https://example.com/mcp" /></div><div className="space-y-2"><Label htmlFor="external-mcp-token">Bearer Token（可选）</Label><Input id="external-mcp-token" type="password" autoComplete="new-password" value={externalMcpToken} onChange={(event) => { setExternalMcpToken(event.target.value); setExternalMcpTested(false); }} placeholder="需要认证时填写" /></div></> : <><div className="space-y-2"><Label htmlFor="external-mcp-command">启动命令</Label><Input id="external-mcp-command" value={externalMcpCommand} onChange={(event) => { setExternalMcpCommand(event.target.value); setExternalMcpTested(false); }} placeholder="例如：npx" /></div><div className="space-y-2"><Label htmlFor="external-mcp-args">命令参数（JSON 数组）</Label><Textarea id="external-mcp-args" value={externalMcpArgsJson} onChange={(event) => { setExternalMcpArgsJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'["-y", "@example/mcp-server"]'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-env">环境变量（JSON 对象，可选）</Label><Textarea id="external-mcp-env" value={externalMcpEnvJson} onChange={(event) => { setExternalMcpEnvJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'{"API_KEY": "..."}'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-cwd">工作目录（可选）</Label><Input id="external-mcp-cwd" value={externalMcpCwd} onChange={(event) => { setExternalMcpCwd(event.target.value); setExternalMcpTested(false); }} placeholder="/path/to/project" /></div><p className="text-xs leading-relaxed text-amber-700">命令会在这台电脑上以当前用户权限运行。只配置并启动你信任的 MCP 程序。</p></>}
+          <p className="text-xs leading-relaxed text-muted-foreground">凭据保存在当前用户配置中。未标记只读的工具需要手动授权；声明为有破坏性的工具仍不可用。</p>
           {externalMcpError && <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{externalMcpError}</div>}
           {externalMcpTested && <div className="space-y-1 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"><strong>连接成功</strong><p>{externalMcpPreview.filter((tool) => tool.readOnly).length} 个只读工具可直接启用</p>{externalMcpPreview.some((tool) => !tool.readOnly) && <small className="text-amber-700">{externalMcpPreview.filter((tool) => !tool.readOnly && tool.canEnable).length} 个未标记只读的工具可在添加后手动授权；{externalMcpPreview.filter((tool) => tool.destructive).length} 个声明为有破坏性的工具不可用。</small>}</div>}
         </div>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" disabled={externalMcpTesting || !externalMcpUrl.trim()} onClick={() => void testExternalMcp()}>{externalMcpTesting ? "测试中…" : "测试连接"}</Button>
+          <Button type="button" variant="outline" disabled={externalMcpTesting || (externalMcpTransport === "stdio" ? !externalMcpCommand.trim() : !externalMcpUrl.trim())} onClick={() => void testExternalMcp()}>{externalMcpTesting ? "测试中…" : externalMcpTransport === "stdio" ? "测试命令" : "测试连接"}</Button>
           <Button type="button" disabled={externalMcpSaving || !externalMcpTested || !externalMcpName.trim()} onClick={() => void saveExternalMcp()}>{externalMcpSaving ? "添加中…" : "添加 MCP"}</Button>
         </div>
       </DialogContent>
@@ -1510,6 +1562,7 @@ export default function Home() {
   const [authMessage, setAuthMessage] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [oauthPendingBinding, setOauthPendingBinding] = useState(false);
+  const [startFreshSession, setStartFreshSession] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
@@ -1531,6 +1584,12 @@ export default function Home() {
       if (!cancelled) setProviders(data.providers || []);
     }).catch((error) => { if (!cancelled) setAuthError(error instanceof Error ? error.message : "读取登录状态失败。"); });
     const query = new URLSearchParams(window.location.search);
+    if (query.get("newSession") === "1") {
+      setStartFreshSession(true);
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete("newSession");
+      window.history.replaceState(null, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+    }
     if (query.get("auth") === "provider-unlinked") { setAuthMessage("授权成功。输入已有账号的用户名和密码即可绑定；如果用户名尚未注册，页面会切换到注册，注册后自动绑定并登录。"); setOauthPendingBinding(true); setAuthMode("login"); setShowAuthModal(true); }
     else if (query.get("auth") === "provider-bound") setAuthMessage("第三方账号绑定成功。");
     else if (query.get("auth") === "cancelled") setAuthMessage("第三方登录已取消。");
@@ -1585,10 +1644,12 @@ export default function Home() {
     }
     window.location.href = `/api/auth/oauth/${encodeURIComponent(provider.id)}`;
   };
-  const clearAuthCallbackQuery = () => {
+  const clearAuthCallbackQuery = (newSession = false) => {
     const url = new URL(window.location.href);
     url.searchParams.delete("auth");
     url.searchParams.delete("message");
+    url.searchParams.delete("newSession");
+    if (newSession) url.searchParams.set("newSession", "1");
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     setOauthPendingBinding(false);
   };
@@ -1612,7 +1673,7 @@ export default function Home() {
   };
   return <>
     {!user && <div className="guest-auth-bar"><button type="button" className="primary" onClick={() => openAuth("login")}>登录/注册</button></div>}
-    <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} onRequireLogin={() => openAuth("login")} onOpenProfile={() => { setProfileError(""); setProfileOpen(true); }} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); clearAuthCallbackQuery(); window.location.reload(); }} />
+    <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} startFreshSession={startFreshSession} onRequireLogin={() => openAuth("login")} onOpenProfile={() => { setProfileError(""); setProfileOpen(true); }} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); clearAuthCallbackQuery(); window.location.reload(); }} />
     <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
       <DialogContent className="max-w-[480px] border-zinc-200 bg-white text-zinc-900">
         <DialogHeader>
@@ -1649,7 +1710,7 @@ export default function Home() {
             return;
           }
           if (!response.ok) throw new Error(data.error || (authMode === "register" ? "注册失败。" : "登录失败。"));
-          clearAuthCallbackQuery();
+          clearAuthCallbackQuery(true);
           window.location.reload();
         } catch (error) { setAuthError(error instanceof Error ? error.message : "请求失败，请稍后重试。"); }
         finally { setAuthLoading(false); }

@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 import { migrateLegacyConfigs, readModelConfigStore, writeModelConfigStore } from "@/lib/local-db";
+
+const hasOutboundProxy = Boolean(process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy);
+if (hasOutboundProxy) setGlobalDispatcher(new EnvHttpProxyAgent());
 
 export type ModelConfig = {
   id: string;
@@ -14,6 +18,17 @@ export type ModelConfig = {
 };
 
 export class ModelServiceError extends Error {}
+
+function fetchFailureMessage(error: unknown) {
+  let cause: unknown = error;
+  let code = "";
+  for (let depth = 0; depth < 5 && cause && typeof cause === "object"; depth += 1) {
+    const details = cause as { code?: unknown; cause?: unknown };
+    if (typeof details.code === "string" && /^[A-Z0-9_]+$/.test(details.code)) { code = details.code; break; }
+    cause = details.cause;
+  }
+  return `无法连接模型服务${code ? `（${code}）` : ""}，请检查 API 地址和服务端网络。`;
+}
 
 type ModelStore = { models: ModelConfig[]; defaultModelId: string | null };
 
@@ -216,8 +231,8 @@ export async function requestModelCompletion(config: ModelConfig, messages: Arra
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
     });
-  } catch {
-    throw new ModelServiceError("无法连接模型服务，请检查 API 地址和网络。");
+  } catch (error) {
+    throw new ModelServiceError(fetchFailureMessage(error));
   }
   if (!response.ok) throw new ModelServiceError("模型服务返回 HTTP " + response.status + "，请检查模型名称、API 地址和 API Key。");
   let payload: Record<string, unknown>;
@@ -333,8 +348,8 @@ export async function requestModelAgentTurn(
     response = await fetch(config.fullAddress ? config.baseUrl : protocolUrl(config.baseUrl, config.protocol), {
       method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(90_000),
     });
-  } catch {
-    throw new ModelServiceError("无法连接模型服务，请检查 API 地址和网络。");
+  } catch (error) {
+    throw new ModelServiceError(fetchFailureMessage(error));
   }
   if (!response.ok || !response.body) throw new ModelServiceError("模型服务返回 HTTP " + response.status + "，请检查模型名称、工具调用支持、API 地址和 API Key。");
 

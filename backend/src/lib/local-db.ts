@@ -84,6 +84,11 @@ function ensureAppSettingsUserKey(database: DatabaseSync) {
 function ensureExternalMcpColumns(database: DatabaseSync) {
   const columns = database.prepare("PRAGMA table_info(external_mcp_servers)").all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === "allowed_tools_json")) database.exec("ALTER TABLE external_mcp_servers ADD COLUMN allowed_tools_json TEXT NOT NULL DEFAULT '[]'");
+  if (!columns.some((column) => column.name === "transport_type")) database.exec("ALTER TABLE external_mcp_servers ADD COLUMN transport_type TEXT NOT NULL DEFAULT 'http'");
+  if (!columns.some((column) => column.name === "command")) database.exec("ALTER TABLE external_mcp_servers ADD COLUMN command TEXT NOT NULL DEFAULT ''");
+  if (!columns.some((column) => column.name === "args_json")) database.exec("ALTER TABLE external_mcp_servers ADD COLUMN args_json TEXT NOT NULL DEFAULT '[]'");
+  if (!columns.some((column) => column.name === "env_json")) database.exec("ALTER TABLE external_mcp_servers ADD COLUMN env_json TEXT NOT NULL DEFAULT '{}'");
+  if (!columns.some((column) => column.name === "cwd")) database.exec("ALTER TABLE external_mcp_servers ADD COLUMN cwd TEXT NOT NULL DEFAULT ''");
 }
 
 function ensureConversationProjectColumns(database: DatabaseSync) {
@@ -166,8 +171,13 @@ function getDatabase() {
         id TEXT PRIMARY KEY,
         user_id INTEGER NOT NULL,
         name TEXT NOT NULL,
+        transport_type TEXT NOT NULL DEFAULT 'http',
         url TEXT NOT NULL,
         token TEXT NOT NULL,
+        command TEXT NOT NULL DEFAULT '',
+        args_json TEXT NOT NULL DEFAULT '[]',
+        env_json TEXT NOT NULL DEFAULT '{}',
+        cwd TEXT NOT NULL DEFAULT '',
         enabled INTEGER NOT NULL,
         disabled_tools_json TEXT NOT NULL
       );
@@ -234,12 +244,22 @@ async function getMysqlPool() {
       `CREATE TABLE IF NOT EXISTS conversation_messages (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, conversation_id VARCHAR(128) NOT NULL, message_index INT NOT NULL, role VARCHAR(32) NOT NULL, content LONGTEXT NOT NULL, is_error TINYINT NOT NULL DEFAULT 0, result_json LONGTEXT NULL, UNIQUE KEY conversation_message_order (conversation_id, message_index), CONSTRAINT conversation_messages_fk FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS model_configs (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(255) NOT NULL, protocol VARCHAR(32) NOT NULL, base_url TEXT NOT NULL, full_address TINYINT NOT NULL, model TEXT NOT NULL, api_key TEXT NOT NULL, vendor VARCHAR(128) NOT NULL DEFAULT 'custom', models_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS app_settings (user_id BIGINT NOT NULL, setting_key VARCHAR(128) NOT NULL, setting_value TEXT NULL, PRIMARY KEY (user_id, setting_key)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-      `CREATE TABLE IF NOT EXISTS external_mcp_servers (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(255) NOT NULL, url TEXT NOT NULL, token TEXT NOT NULL, enabled TINYINT NOT NULL, disabled_tools_json LONGTEXT NOT NULL, allowed_tools_json LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS external_mcp_servers (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(255) NOT NULL, transport_type VARCHAR(16) NOT NULL DEFAULT 'http', url TEXT NOT NULL, token TEXT NOT NULL, command TEXT NULL, args_json LONGTEXT NULL, env_json LONGTEXT NULL, cwd TEXT NULL, enabled TINYINT NOT NULL, disabled_tools_json LONGTEXT NOT NULL, allowed_tools_json LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS app_metadata (metadata_key VARCHAR(128) PRIMARY KEY, metadata_value TEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS users (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, username VARCHAR(64) NOT NULL UNIQUE, password_hash VARCHAR(256) NOT NULL, password_salt VARCHAR(128) NOT NULL, is_active TINYINT NOT NULL DEFAULT 1, token_version INT NOT NULL DEFAULT 0, created_at BIGINT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS user_identities (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, user_id BIGINT NOT NULL, provider VARCHAR(32) NOT NULL, provider_user_id VARCHAR(128) NOT NULL, provider_username VARCHAR(191) NOT NULL DEFAULT '', provider_display_name VARCHAR(191) NOT NULL DEFAULT '', avatar_url TEXT NOT NULL, created_at BIGINT NOT NULL, UNIQUE KEY identity_provider_user (provider, provider_user_id), UNIQUE KEY identity_user_provider (user_id, provider), CONSTRAINT user_identities_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     ];
     for (const statement of statements) await pool.query(statement);
+    const [columns] = await pool.query("SHOW COLUMNS FROM external_mcp_servers");
+    const columnNames = new Set((columns as Array<{ Field: string }>).map((column) => column.Field));
+    const additions = [
+      ["transport_type", "VARCHAR(16) NOT NULL DEFAULT 'http'"],
+      ["command", "TEXT NULL"],
+      ["args_json", "LONGTEXT NULL"],
+      ["env_json", "LONGTEXT NULL"],
+      ["cwd", "TEXT NULL"],
+    ] as const;
+    for (const [name, definition] of additions) if (!columnNames.has(name)) await pool.query(`ALTER TABLE external_mcp_servers ADD COLUMN ${name} ${definition}`);
   })().catch(async (error: unknown) => {
     global.dqMysqlSchemaReady = undefined;
     global.dqMysqlPool = undefined;
@@ -537,16 +557,24 @@ export async function writeModelConfigStore(store: { models: Array<{ id: string;
 }
 
 export async function readExternalMcpConfig() {
+  const mapRow = (row: { id: string; name: string; transport: string | null; url: string; token: string; command: string | null; argsJson: string | null; envJson: string | null; cwd: string | null; enabled: number; disabledToolsJson: string; allowedToolsJson: string }) => ({
+    id: row.id, name: row.name, transport: row.transport === "stdio" ? "stdio" as const : "http" as const, url: row.url || "", token: row.token || "",
+    command: row.command || "", args: JSON.parse(row.argsJson || "[]") as string[], env: JSON.parse(row.envJson || "{}") as Record<string, string>, cwd: row.cwd || "",
+    enabled: Boolean(row.enabled), disabledTools: JSON.parse(row.disabledToolsJson) as string[], allowedTools: JSON.parse(row.allowedToolsJson) as string[],
+  });
+  const select = "SELECT id, name, transport_type AS transport, url, token, command, args_json AS argsJson, env_json AS envJson, cwd, enabled, disabled_tools_json AS disabledToolsJson, allowed_tools_json AS allowedToolsJson FROM external_mcp_servers";
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [rows] = await pool.execute("SELECT id, name, url, token, enabled, disabled_tools_json AS disabledToolsJson, allowed_tools_json AS allowedToolsJson FROM external_mcp_servers WHERE user_id = ? ORDER BY id", [currentUserId()]);
-    return { servers: (rows as Array<{ id: string; name: string; url: string; token: string; enabled: number; disabledToolsJson: string; allowedToolsJson: string }>).map((row) => ({ id: row.id, name: row.name, url: row.url, token: row.token, enabled: Boolean(row.enabled), disabledTools: JSON.parse(row.disabledToolsJson) as string[], allowedTools: JSON.parse(row.allowedToolsJson) as string[] })) };
+    const [rows] = await pool.execute(`${select} WHERE user_id = ? ORDER BY id`, [currentUserId()]);
+    return { servers: (rows as Array<Parameters<typeof mapRow>[0]>).map(mapRow) };
   }
-  const rows = getDatabase().prepare("SELECT id, name, url, token, enabled, disabled_tools_json AS disabledToolsJson, allowed_tools_json AS allowedToolsJson FROM external_mcp_servers WHERE user_id = ? ORDER BY rowid").all(currentUserId()) as Array<{ id: string; name: string; url: string; token: string; enabled: number; disabledToolsJson: string; allowedToolsJson: string }>;
-  return { servers: rows.map((row) => ({ id: row.id, name: row.name, url: row.url, token: row.token, enabled: Boolean(row.enabled), disabledTools: JSON.parse(row.disabledToolsJson) as string[], allowedTools: JSON.parse(row.allowedToolsJson) as string[] })) };
+  const rows = getDatabase().prepare(`${select} WHERE user_id = ? ORDER BY rowid`).all(currentUserId()) as Array<Parameters<typeof mapRow>[0]>;
+  return { servers: rows.map(mapRow) };
 }
 
-export async function writeExternalMcpConfig(store: { servers: Array<{ id: string; name: string; url: string; token: string; enabled: boolean; disabledTools: string[]; allowedTools: string[] }> }) {
+export async function writeExternalMcpConfig(store: { servers: Array<{ id: string; name: string; transport: "http" | "stdio"; url: string; token: string; command: string; args: string[]; env: Record<string, string>; cwd: string; enabled: boolean; disabledTools: string[]; allowedTools: string[] }> }) {
+  const insertSql = "INSERT INTO external_mcp_servers (id, user_id, name, transport_type, url, token, command, args_json, env_json, cwd, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+  const values = (server: typeof store.servers[number]) => [server.id, currentUserId(), server.name, server.transport, server.url, server.token, server.command, JSON.stringify(server.args), JSON.stringify(server.env), server.cwd, server.enabled ? 1 : 0, JSON.stringify(server.disabledTools), JSON.stringify(server.allowedTools)];
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
     const connection = await pool.getConnection();
@@ -554,7 +582,7 @@ export async function writeExternalMcpConfig(store: { servers: Array<{ id: strin
       await connection.beginTransaction();
       await connection.execute("DELETE FROM external_mcp_servers WHERE user_id = ?", [currentUserId()]);
       for (const server of store.servers) {
-        await connection.execute("INSERT INTO external_mcp_servers (id, user_id, name, url, token, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [server.id, currentUserId(), server.name, server.url, server.token, server.enabled ? 1 : 0, JSON.stringify(server.disabledTools), JSON.stringify(server.allowedTools)]);
+        await connection.execute(insertSql, values(server));
       }
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; }
@@ -565,8 +593,8 @@ export async function writeExternalMcpConfig(store: { servers: Array<{ id: strin
   database.exec("BEGIN IMMEDIATE");
   try {
     database.prepare("DELETE FROM external_mcp_servers WHERE user_id = ?").run(currentUserId());
-    const insert = database.prepare("INSERT INTO external_mcp_servers (id, user_id, name, url, token, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-    store.servers.forEach((server) => insert.run(server.id, currentUserId(), server.name, server.url, server.token, server.enabled ? 1 : 0, JSON.stringify(server.disabledTools), JSON.stringify(server.allowedTools)));
+    const insert = database.prepare(insertSql);
+    store.servers.forEach((server) => insert.run(...values(server)));
     database.exec("COMMIT");
   } catch (error) { database.exec("ROLLBACK"); throw error; }
 }

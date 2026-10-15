@@ -13,7 +13,7 @@
     "build": "npm run build --workspace @little-sunshine/backend && npm run build --workspace @little-sunshine/frontend",
     "start": "npm run start --workspace @little-sunshine/backend",
     "lint": "npm run lint --workspace @little-sunshine/backend && npm run lint --workspace @little-sunshine/frontend",
-    "desktop:dev": "concurrently -k -s first \"npm run dev --workspace @little-sunshine/backend\" \"npm run dev --workspace @little-sunshine/frontend\" \"wait-on http://127.0.0.1:3000 && electron .\"",
+    "desktop:dev": "concurrently -k -s first \"node electron/dev-backend.cjs\" \"npm run dev --workspace @little-sunshine/frontend\" \"wait-on http://127.0.0.1:3000 && electron .\"",
     "desktop:build": "npm run build && electron-builder"
   },
   "devDependencies": {

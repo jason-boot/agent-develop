@@ -136,7 +136,9 @@ function startStaticProxy(frontendDirectory, backendPort) {
 async function createWindow() {
   let url;
   if (!app.isPackaged) {
-    url = process.env.DESKTOP_DEV_URL || "http://127.0.0.1:3000";
+    const desktopDevUrl = new URL(process.env.DESKTOP_DEV_URL || "http://127.0.0.1:3000");
+    desktopDevUrl.searchParams.set("desktop", "1");
+    url = desktopDevUrl.toString();
   } else {
     const port = await choosePort();
     const resourceRoot = process.resourcesPath;
@@ -145,6 +147,7 @@ async function createWindow() {
     const environment = {
       ...process.env,
       USAGE_AGENT_CONFIG_DIR: app.getPath("userData"),
+      LITTLE_SUNSHINE_RUNTIME: "desktop",
       ELECTRON_RUN_AS_NODE: "1",
       HOSTNAME: "127.0.0.1",
       PORT: String(port),
@@ -158,7 +161,9 @@ async function createWindow() {
     });
     serverProcess.on("error", () => {});
     await waitForServer(`http://127.0.0.1:${port}/api/health`);
-    url = await startStaticProxy(path.join(resourceRoot, "frontend"), port);
+    const desktopUrl = new URL(await startStaticProxy(path.join(resourceRoot, "frontend"), port));
+    desktopUrl.searchParams.set("desktop", "1");
+    url = desktopUrl.toString();
   }
 
   mainWindow = new BrowserWindow({
