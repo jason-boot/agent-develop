@@ -20,6 +20,12 @@ type ImageAttachment = { id: string; name: string; mimeType: "image/jpeg" | "ima
 type Message = { role: "assistant" | "user"; content: string; images?: ImageAttachment[]; generatedImages?: string[]; result?: ChatReply; projectId?: string; error?: boolean };
 type Conversation = { id: string; title: string; updatedAt: number; pinned?: boolean; projectId?: string; projectName?: string; messages?: Message[] };
 const sortConversations = (items: Conversation[]) => [...items].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt - a.updatedAt);
+const formatDateTime = (timestamp?: number) => {
+  if (!Number.isFinite(timestamp)) return "—";
+  const date = new Date(timestamp as number);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+};
 type LocalProject = { id: string; name: string };
 type ModelProtocol = "chat" | "messages" | "responses";
 type ModelProfile = { id: string; name: string; protocol: ModelProtocol; baseUrl: string; fullAddress: boolean; model: string; vendor: string; modelsUrl: string; hasApiKey: boolean };
@@ -1570,7 +1576,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
 
 export default function Home() {
   type AuthProvider = { id: string; name: string };
-  type AuthUser = { id: number; username: string; local?: boolean; authProvider?: string | null; identities: Array<{ provider: string; providerUsername: string; providerDisplayName?: string; avatarUrl?: string }> };
+  type AuthUser = { id: number; username: string; local?: boolean; authProvider?: string | null; identities: Array<{ provider: string; providerUsername: string; providerDisplayName?: string; avatarUrl?: string; createdAt?: number }> };
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
   const [providers, setProviders] = useState<AuthProvider[]>([]);
   const [authError, setAuthError] = useState("");
@@ -1749,7 +1755,7 @@ export default function Home() {
               const identity = user?.identities.find((item) => item.provider === provider.id);
               const configured = providers.some((item) => item.id === provider.id);
               return <div className="profile-provider-row" key={provider.id}>
-                <div className="profile-provider-info">{identity?.avatarUrl && <img className="profile-provider-avatar" src={identity.avatarUrl} alt={`${provider.name} 头像`} referrerPolicy="no-referrer" />}<div><strong>{provider.name}</strong><span>{identity ? identity.providerUsername || identity.providerDisplayName || "已绑定" : configured ? "未绑定" : "尚未配置"}</span></div></div>
+                <div className="profile-provider-info">{identity?.avatarUrl && <img className="profile-provider-avatar" src={identity.avatarUrl} alt={`${provider.name} 头像`} referrerPolicy="no-referrer" />}<div><strong>{provider.name}</strong><span>{identity ? identity.providerUsername || identity.providerDisplayName || "已绑定" : configured ? "未绑定" : "尚未配置"}</span>{identity && <span>绑定时间：{formatDateTime(identity.createdAt)}</span>}</div></div>
                 {identity ? <button type="button" className="profile-unlink-button" disabled={Boolean(profileBusy)} onClick={() => void unlinkProvider(provider)}>{profileBusy === provider.id ? "处理中…" : "解绑"}</button> : <button type="button" className="profile-link-button" disabled={Boolean(profileBusy) || !configured} title={!configured ? `尚未配置 ${provider.name} OAuth` : undefined} onClick={() => openOAuthPopup(provider)}>绑定</button>}
               </div>;
             })}
