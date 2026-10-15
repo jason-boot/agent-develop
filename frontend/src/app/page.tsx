@@ -1628,6 +1628,7 @@ export default function Home() {
         setAuthMessage(result.message || (result.auth === "cancelled" ? "第三方授权已取消。" : "第三方账号绑定失败。"));
         setShowAuthModal(true);
       } else if (result.auth === "success" || result.auth === "provider-bound") {
+        if (result.auth === "success") setStartFreshSession(true);
         void fetch("/api/auth/me").then(async (response) => {
           const data = await response.json() as { user?: AuthUser | null; providers?: AuthProvider[] };
           if (!response.ok) throw new Error("无法读取授权后的登录状态。");
