@@ -197,6 +197,7 @@ export async function loginWithPassword(request: Request) {
   const username = typeof body?.username === "string" ? body.username.trim() : "";
   const password = typeof body?.password === "string" ? body.password : "";
   const user = username ? await findUserByUsername(username) : null;
+  if (!user && pendingIdentity(request)) return Response.json({ error: "该用户名尚未注册。", accountNotFound: true }, { status: 404 });
   if (!user || !user.isActive || password.length > 128) return Response.json({ error: "用户名或密码不正确。" }, { status: 401 });
   const hash = await new Promise<Buffer>((resolve, reject) => scrypt(password, user.passwordSalt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, key) => error ? reject(error) : resolve(key)));
   const expected = Buffer.from(user.passwordHash, "hex");

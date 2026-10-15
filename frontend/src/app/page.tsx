@@ -14,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { diffLines } from "diff";
-import { ArrowDown, ArrowUp, ChevronDown, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Plus, Trash2, TriangleAlert, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Plus, Trash2, TriangleAlert, UserRound, X } from "lucide-react";
 
 type ImageAttachment = { id: string; name: string; mimeType: "image/jpeg" | "image/png" | "image/webp"; dataUrl: string };
 type Message = { role: "assistant" | "user"; content: string; images?: ImageAttachment[]; generatedImages?: string[]; result?: ChatReply; projectId?: string; error?: boolean };
@@ -1330,7 +1330,7 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
         {recentConversations.length ? sortConversations(recentConversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming} menuOpen={openConversationMenuId === conversation.id} onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />) : <div className="conversation-history-empty">暂无会话</div>}
       </div>
       <div className="sidebar-bottom">
-        {authenticated ? <div className="sidebar-account"><div className="user-chip"><span className="avatar">{username?.slice(0, 1).toUpperCase() || "U"}</span><div className="sidebar-account-name"><strong>{username || "已登录用户"}</strong><small>已登录</small></div><button type="button" className="sidebar-account-more" aria-label="账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /></button></div>{userMenuOpen && <div className="sidebar-account-menu"><button type="button" className="sidebar-account-profile" onClick={() => { setUserMenuOpen(false); onOpenProfile(); }}>个人资料</button><button type="button" className="sidebar-account-logout" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut aria-hidden="true" />退出登录</button></div>}</div> : <button type="button" className="guest-sidebar-login" onClick={onRequireLogin}>登录</button>}
+        {authenticated ? <div className="sidebar-account"><div className="user-chip"><span className="avatar">{username?.slice(0, 1).toUpperCase() || "U"}</span><div className="sidebar-account-name"><strong>{username || "已登录用户"}</strong><small>已登录</small></div><button type="button" className="sidebar-account-more" aria-label="账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /></button></div>{userMenuOpen && <div className="sidebar-account-menu"><button type="button" className="sidebar-account-profile" onClick={() => { setUserMenuOpen(false); onOpenProfile(); }}><UserRound aria-hidden="true" />个人资料</button><button type="button" className="sidebar-account-logout" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut aria-hidden="true" />退出登录</button></div>}</div> : <button type="button" className="guest-sidebar-login" onClick={onRequireLogin}>登录</button>}
       </div>
     </aside>
 
@@ -1503,12 +1503,13 @@ function ChatApp({ authenticated, userId, username, onRequireLogin, onOpenProfil
 
 export default function Home() {
   type AuthProvider = { id: string; name: string };
-  type AuthUser = { id: number; username: string; local?: boolean; identities: Array<{ provider: string; providerUsername: string; providerDisplayName?: string }> };
+  type AuthUser = { id: number; username: string; local?: boolean; identities: Array<{ provider: string; providerUsername: string; providerDisplayName?: string; avatarUrl?: string }> };
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
   const [providers, setProviders] = useState<AuthProvider[]>([]);
   const [authError, setAuthError] = useState("");
   const [authMessage, setAuthMessage] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [oauthPendingBinding, setOauthPendingBinding] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
@@ -1530,7 +1531,7 @@ export default function Home() {
       if (!cancelled) setProviders(data.providers || []);
     }).catch((error) => { if (!cancelled) setAuthError(error instanceof Error ? error.message : "读取登录状态失败。"); });
     const query = new URLSearchParams(window.location.search);
-    if (query.get("auth") === "provider-unlinked") { setAuthMessage("授权成功。请输入已有账号的用户名和密码完成绑定；如果还没有账号，请切换到注册并创建账号，注册后会自动绑定。"); setAuthMode("register"); setShowAuthModal(true); }
+    if (query.get("auth") === "provider-unlinked") { setAuthMessage("授权成功。输入已有账号的用户名和密码即可绑定；如果用户名尚未注册，页面会切换到注册，注册后自动绑定并登录。"); setOauthPendingBinding(true); setAuthMode("login"); setShowAuthModal(true); }
     else if (query.get("auth") === "provider-bound") setAuthMessage("第三方账号绑定成功。");
     else if (query.get("auth") === "cancelled") setAuthMessage("第三方登录已取消。");
     else if (query.get("auth") === "bind-failed") setAuthMessage(query.get("message") || "第三方账号绑定失败。");
@@ -1544,8 +1545,9 @@ export default function Home() {
       if (result.auth === "provider-unlinked") {
         setUser(null);
         const providerName = providers.find((provider) => provider.id === result.provider)?.name || result.provider || "第三方平台";
-        setAuthMessage(`${providerName} 授权成功。请输入已有账号的用户名和密码完成绑定；如果还没有账号，请切换到注册并创建账号，注册后会自动绑定。`);
-        setAuthMode("register");
+        setAuthMessage(`${providerName} 授权成功。输入已有账号的用户名和密码即可绑定；如果用户名尚未注册，页面会切换到注册，注册后自动绑定并登录。`);
+        setOauthPendingBinding(true);
+        setAuthMode("login");
         setShowAuthModal(true);
       } else if (result.auth === "cancelled" || result.auth === "bind-failed") {
         setAuthMessage(result.message || (result.auth === "cancelled" ? "第三方授权已取消。" : "第三方账号绑定失败。"));
@@ -1618,7 +1620,7 @@ export default function Home() {
               const identity = user?.identities.find((item) => item.provider === provider.id);
               const configured = providers.some((item) => item.id === provider.id);
               return <div className="profile-provider-row" key={provider.id}>
-                <div className="profile-provider-info"><strong>{provider.name}</strong><span>{identity ? identity.providerUsername || identity.providerDisplayName || "已绑定" : configured ? "未绑定" : "尚未配置"}</span></div>
+                <div className="profile-provider-info">{identity?.avatarUrl && <img className="profile-provider-avatar" src={identity.avatarUrl} alt={`${provider.name} 头像`} referrerPolicy="no-referrer" />}<div><strong>{provider.name}</strong><span>{identity ? identity.providerUsername || identity.providerDisplayName || "已绑定" : configured ? "未绑定" : "尚未配置"}</span></div></div>
                 {identity ? <button type="button" className="profile-unlink-button" disabled={Boolean(profileBusy)} onClick={() => void unlinkProvider(provider)}>{profileBusy === provider.id ? "处理中…" : "解绑"}</button> : <button type="button" className="profile-link-button" disabled={Boolean(profileBusy) || !configured} title={!configured ? `尚未配置 ${provider.name} OAuth` : undefined} onClick={() => openOAuthPopup(provider)}>绑定</button>}
               </div>;
             })}
@@ -1633,7 +1635,12 @@ export default function Home() {
         event.preventDefault(); setAuthError(""); setAuthLoading(true);
         try {
           const response = await fetch(`/api/auth/${authMode}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
-          const data = await response.json() as { error?: string };
+          const data = await response.json() as { error?: string; accountNotFound?: boolean };
+          if (!response.ok && authMode === "login" && data.accountNotFound) {
+            setAuthMode("register");
+            setAuthError("该用户名尚未注册，已切换到注册。注册后会自动绑定并登录。");
+            return;
+          }
           if (!response.ok) throw new Error(data.error || (authMode === "register" ? "注册失败。" : "登录失败。"));
           window.location.reload();
         } catch (error) { setAuthError(error instanceof Error ? error.message : "请求失败，请稍后重试。"); }
@@ -1642,10 +1649,10 @@ export default function Home() {
         <Input required autoComplete="username" minLength={3} maxLength={32} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="用户名" />
         <Input required type="password" autoComplete={authMode === "register" ? "new-password" : "current-password"} minLength={8} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码（至少 8 位）" />
         {authError && <div className="auth-error" role="alert">{authError}</div>}
-        <button type="submit" className="github-login-button" disabled={authLoading}>{authLoading ? "处理中…" : authMode === "register" ? "注册并登录" : "登录"}</button>
+        <button type="submit" className="github-login-button" disabled={authLoading}>{authLoading ? "处理中…" : authMode === "register" ? "注册并登录" : oauthPendingBinding ? "绑定并登录" : "登录"}</button>
       </form>
       <div className="auth-providers"><div className="auth-provider-divider"><span>或使用第三方账号</span></div><div className="auth-provider-icons">{oauthButtons.map((provider) => <button key={provider.id} type="button" className="auth-provider-icon-button" aria-label={`使用 ${provider.name} 授权`} onClick={() => openOAuthPopup(provider)}><span className="auth-provider-tooltip" aria-hidden="true">{provider.name}</span>{provider.id === "github" ? <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.54v-2.08c-3.1.68-3.75-1.32-3.75-1.32-.5-1.3-1.23-1.65-1.23-1.65-1.01-.69.08-.68.08-.68 1.12.08 1.7 1.15 1.7 1.15.99 1.69 2.6 1.2 3.23.92.1-.72.39-1.2.7-1.48-2.48-.28-5.09-1.24-5.09-5.51 0-1.22.44-2.21 1.15-2.99-.12-.28-.5-1.42.11-2.95 0 0 .94-.3 3.05 1.14a10.6 10.6 0 0 1 5.55 0c2.11-1.44 3.04-1.14 3.04-1.14.61 1.53.23 2.67.12 2.95.71.78 1.14 1.77 1.14 2.99 0 4.28-2.61 5.22-5.1 5.5.4.34.75 1.02.75 2.06v3.09c0 .3.2.65.76.54A11.1 11.1 0 0 0 12 .9Z" /></svg> : provider.id === "gitee" ? <span className="gitee-provider-mark">G</span> : provider.id === "google" ? <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.7c3.9-3.6 6-8.8 6-15Z"/><path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.8l-6.7-5.1c-1.8 1.2-4 1.9-6.8 1.9-5.2 0-9.6-3.5-11.2-8.2H5.9v5.2C9.3 39.6 16.1 44 24 44Z"/><path fill="#FBBC05" d="M12.8 27.8a12 12 0 0 1 0-7.6V15H5.9a20 20 0 0 0 0 18l6.9-5.2Z"/><path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.9-5.9C34.1 6 29.5 4 24 4 16.1 4 9.3 8.4 5.9 15l6.9 5.2c1.6-4.7 6-8.1 11.2-8.1Z"/></svg> : <span>{provider.name.slice(0, 1).toUpperCase()}</span>}</button>)}</div><small>授权后登录已有账号，或注册新账号并自动绑定</small></div>
-      <button type="button" className="auth-mode-button" onClick={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "没有账号？注册" : "已有账号？登录"}</button>
+      <button type="button" className="auth-mode-button" onClick={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "没有账号？注册" : oauthPendingBinding ? "已有账号？绑定并登录" : "已有账号？登录"}</button>
   </section></div>}
   </>;
 }
