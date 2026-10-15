@@ -26,7 +26,7 @@ type OAuthProviderConfig = {
 };
 type AuthConfig = { jwtSecret?: string; appBaseUrl?: string; providers?: Record<string, OAuthProviderConfig> };
 type OAuthProvider = Required<Pick<OAuthProviderConfig, "clientId" | "clientSecret" | "authorizationUrl" | "tokenUrl" | "userInfoUrl" | "scope" | "tokenRequestFormat" | "userIdField" | "usernameField" | "displayNameField" | "avatarField">> & { callbackUrl?: string; tokenGrantType?: string };
-type AppSession = { id: number; username: string; tokenVersion: number; local?: boolean };
+type AppSession = { id: number; username: string; tokenVersion: number; local?: boolean; authProvider?: string | null };
 
 let cachedAuthConfig: AuthConfig | undefined;
 function configDirectory() { return process.env.USAGE_AGENT_CONFIG_DIR || path.join(process.cwd(), ".agent-data"); }
@@ -143,17 +143,17 @@ function getPathValue(value: unknown, fieldPath: string): unknown {
   return fieldPath.split(".").reduce<unknown>((current, key) => current && typeof current === "object" ? (current as Record<string, unknown>)[key] : undefined, value);
 }
 
-function setSessionCookie(response: Response, request: Request, user: AppUser) {
+function setSessionCookie(response: Response, request: Request, user: AppUser, authProvider: string | null = null) {
   const now = Math.floor(Date.now() / 1000);
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-  const payload = Buffer.from(JSON.stringify({ sub: String(user.id), ver: user.tokenVersion, iat: now, exp: now + sessionLifetimeSeconds, iss: jwtIssuer })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ sub: String(user.id), ver: user.tokenVersion, iat: now, exp: now + sessionLifetimeSeconds, iss: jwtIssuer, authProvider })).toString("base64url");
   const token = `${header}.${payload}.${signJwt(`${header}.${payload}`)}`;
   response.headers.append("Set-Cookie", `${sessionCookie}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${sessionLifetimeSeconds}${secureCookie(request) ? "; Secure" : ""}`);
   return response;
 }
 
-function jsonWithSession(request: Request, user: AppUser) {
-  return setSessionCookie(Response.json({ user: { id: user.id, username: user.username } }), request, user);
+function jsonWithSession(request: Request, user: AppUser, authProvider: string | null = null) {
+  return setSessionCookie(Response.json({ user: { id: user.id, username: user.username } }), request, user, authProvider);
 }
 
 export function clearSessionCookie(request: Request) {
@@ -181,7 +181,7 @@ export async function registerWithPassword(request: Request) {
     const user = await createLocalUser(username, hash.toString("hex"), salt);
     try {
       await bindPendingIdentity(request, user);
-      return clearPendingIdentity(jsonWithSession(request, user), request);
+      return clearPendingIdentity(jsonWithSession(request, user, pendingIdentity(request)?.provider || null), request);
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : "第三方账号绑定失败，请重试。" }, { status: 409 });
     }
@@ -221,10 +221,10 @@ function decodeJwt(request: Request) {
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return null;
   try {
     const header = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8")) as { alg?: string };
-    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { sub?: string; ver?: number; exp?: number; iss?: string };
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { sub?: string; ver?: number; exp?: number; iss?: string; authProvider?: unknown };
     const id = Number(payload.sub);
     if (header.alg !== "HS256" || payload.iss !== jwtIssuer || !Number.isSafeInteger(id) || id < 1 || !Number.isInteger(payload.ver) || !Number.isFinite(payload.exp) || payload.exp! <= Date.now() / 1000) return null;
-    return { id, tokenVersion: payload.ver! };
+    return { id, tokenVersion: payload.ver!, authProvider: typeof payload.authProvider === "string" ? payload.authProvider : null };
   } catch { return null; }
 }
 
@@ -233,7 +233,7 @@ export async function getSession(request: Request): Promise<AppSession | null> {
   if (!claims) return null;
   const user = await findUserById(claims.id);
   if (!user || !user.isActive || user.tokenVersion !== claims.tokenVersion) return null;
-  return { id: user.id, username: user.username, tokenVersion: user.tokenVersion };
+  return { id: user.id, username: user.username, tokenVersion: user.tokenVersion, authProvider: claims.authProvider };
 }
 
 export async function completeOAuthLogin(request: Request, providerId: string) {
@@ -248,7 +248,7 @@ export async function completeOAuthLogin(request: Request, providerId: string) {
   const popup = cookie(request, popupCookieName) === "1";
   const clearState = `${stateCookieName}=; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=0${secureCookie(request) ? "; Secure" : ""}`;
   const clearPopup = `${popupCookieName}=; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=0${secureCookie(request) ? "; Secure" : ""}`;
-  const redirect = (pathName: string, user?: AppUser) => {
+  const redirect = (pathName: string, user?: AppUser, authProvider: string | null = null) => {
     const appBaseUrl = process.env.APP_BASE_URL || authConfig().appBaseUrl || new URL(callbackUrl(request, providerId, provider)).origin;
     let response: Response;
     if (popup) {
@@ -261,7 +261,7 @@ export async function completeOAuthLogin(request: Request, providerId: string) {
     } else response = redirectResponse(new URL(pathName, appBaseUrl));
     response.headers.append("Set-Cookie", clearState);
     response.headers.append("Set-Cookie", clearPopup);
-    return user ? setSessionCookie(response, request, user) : response;
+    return user ? setSessionCookie(response, request, user, authProvider) : response;
   };
   if (requestUrl.searchParams.has("error")) return redirect("/?auth=cancelled");
   if (!code || !state || !expectedState || state !== expectedState) return new Response("OAuth state 校验失败，请重新登录。", { status: 400, headers: { "Set-Cookie": clearState } });
@@ -302,12 +302,12 @@ export async function completeOAuthLogin(request: Request, providerId: string) {
       await bindUserIdentity(currentSession.id, identity);
       const user = await findUserById(currentSession.id);
       if (!user) return new Response("当前用户不存在。", { status: 401 });
-      return redirect("/?auth=provider-bound", user);
+      return redirect("/?auth=provider-bound", user, currentSession.authProvider || null);
     } catch (error) { return redirect(`/?auth=bind-failed&message=${encodeURIComponent(error instanceof Error ? error.message : "绑定失败")}`); }
   }
 
   const existingUser = await findUserByIdentity(providerId, identity.providerUserId);
-  if (existingUser?.isActive) return redirect("/?newSession=1", existingUser);
+  if (existingUser?.isActive) return redirect("/?newSession=1", existingUser, providerId);
   return setPendingIdentity(redirect("/?auth=provider-unlinked"));
 }
 

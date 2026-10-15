@@ -179,7 +179,7 @@ function ProjectFileDiff({ change }: { change: ProjectFileChange }) {
   })}</pre>;
 }
 
-const welcome = "你好，我是使用记录助手。可以问我模型调用量、Token 用量、费用、延迟或失败请求。";
+const welcome = "你好，我是 Little Sunshine。";
 const displayCost = (amount: number | string) => "¥" + String(amount);
 const formatNumber = (n: number) => new Intl.NumberFormat("zh-CN").format(n || 0);
 function bailianModelsUrl(region: BailianRegion, workspaceId: string) {
@@ -434,7 +434,14 @@ function DailyModelTrendChart({ points, chartSpec, from, to }: { points: DailyMo
   </section>;
 }
 
-function ChatApp({ authenticated, userId, username, startFreshSession, onRequireLogin, onOpenProfile, onLogout }: { authenticated: boolean; userId?: number; username?: string; startFreshSession: boolean; onRequireLogin: () => void; onOpenProfile: () => void; onLogout: () => void }) {
+function SidebarAvatar({ username, avatarUrl }: { username?: string; avatarUrl?: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [avatarUrl]);
+  if (avatarUrl && !failed) return <img className="avatar-image" src={avatarUrl} alt="用户头像" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
+  return <span className="avatar">{username?.slice(0, 1).toUpperCase() || "U"}</span>;
+}
+
+function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession, onRequireLogin, onOpenProfile, onLogout }: { authenticated: boolean; userId?: number; username?: string; avatarUrl?: string; startFreshSession: boolean; onRequireLogin: () => void; onOpenProfile: () => void; onLogout: () => void }) {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([{ role: "assistant", content: welcome }]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -518,15 +525,19 @@ function ChatApp({ authenticated, userId, username, startFreshSession, onRequire
   const [externalMcpPreview, setExternalMcpPreview] = useState<McpTool[]>([]);
   const [externalMcpExpandedId, setExternalMcpExpandedId] = useState("");
   const selectedModel = models.find((model) => model.id === selectedModelId);
-  const agnesPresetModels = [
+  const agnesBuiltinModels = [
     { name: "Agnes 3.0 Flash", model: "agnes-3.0-flash" },
     { name: "Agnes 2.5 Flash", model: "agnes-2.5-flash" },
-  ].filter((preset) => !models.some((model) => model.vendor.toLocaleLowerCase() === "agnes ai" && model.model === preset.model));
+  ].map((preset) => ({
+    ...preset,
+    configured: models.find((model) => model.vendor.toLocaleLowerCase() === "agnes ai" && model.model === preset.model),
+  }));
   const existingVendors = [...new Set(models.map((model) => model.vendor).filter((vendor) => vendor && vendor !== "custom" && vendor !== "aliyun-bailian"))];
   const availableVendors = ["阿里云百炼", "DeepSeek", "智谱AI", "Agnes AI", ...existingVendors.filter((vendor) => !["deepseek", "智谱ai", "智谱", "agnes ai"].includes(vendor.toLocaleLowerCase()))];
   const filteredVendors = availableVendors.filter((vendor) => vendor.toLocaleLowerCase().includes(vendorSearch.trim().toLocaleLowerCase()));
   const canDiscoverModels = Boolean((modelApiKey.trim() || credentialSourceModelId) && modelListUrl.trim());
   const modelGroups = models.reduce<Record<string, ModelProfile[]>>((groups, model) => {
+    if (agnesBuiltinModels.some((preset) => preset.model === model.model && preset.configured?.id === model.id)) return groups;
     const vendor = model.vendor || "custom";
     (groups[vendor] ||= []).push(model);
     return groups;
@@ -1382,7 +1393,7 @@ function ChatApp({ authenticated, userId, username, startFreshSession, onRequire
         {recentConversations.length ? sortConversations(recentConversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming} menuOpen={openConversationMenuId === conversation.id} onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />) : <div className="conversation-history-empty">暂无会话</div>}
       </div>
       <div className="sidebar-bottom">
-        {authenticated ? <div className="sidebar-account"><div className="user-chip"><span className="avatar">{username?.slice(0, 1).toUpperCase() || "U"}</span><div className="sidebar-account-name"><strong>{username || "已登录用户"}</strong><small>已登录</small></div><button type="button" className="sidebar-account-more" aria-label="账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /></button></div>{userMenuOpen && <div className="sidebar-account-menu"><button type="button" className="sidebar-account-profile" onClick={() => { setUserMenuOpen(false); onOpenProfile(); }}><UserRound aria-hidden="true" />个人资料</button><button type="button" className="sidebar-account-logout" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut aria-hidden="true" />退出登录</button></div>}</div> : <button type="button" className="guest-sidebar-login" onClick={onRequireLogin}>登录</button>}
+        {authenticated ? <div className="sidebar-account"><div className="user-chip"><SidebarAvatar username={username} avatarUrl={avatarUrl} /><div className="sidebar-account-name"><strong>{username || "已登录用户"}</strong><small>已登录</small></div><button type="button" className="sidebar-account-more" aria-label="账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /></button></div>{userMenuOpen && <div className="sidebar-account-menu"><button type="button" className="sidebar-account-profile" onClick={() => { setUserMenuOpen(false); onOpenProfile(); }}><UserRound aria-hidden="true" />个人资料</button><button type="button" className="sidebar-account-logout" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut aria-hidden="true" />退出登录</button></div>}</div> : <button type="button" className="guest-sidebar-login" onClick={onRequireLogin}>登录</button>}
       </div>
     </aside>
 
@@ -1406,7 +1417,7 @@ function ChatApp({ authenticated, userId, username, startFreshSession, onRequire
             {pendingImages.length > 0 && <div className="composer-image-previews">{pendingImages.map((image) => <div className="composer-image-preview" key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" aria-label={`移除图片 ${image.name}`} title="移除图片" onClick={() => setPendingImages((items) => items.filter((item) => item.id !== image.id))}>×</button></div>)}</div>}
             {selectedProject && <div className="project-chat-context active"><FolderPlus aria-hidden="true" /><span>项目</span><span className="project-context-value">{selectedProject.name}</span><small>本轮可访问此项目</small></div>}
             <Textarea className="composer-textarea" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="给 Little Sunshine 发送消息" rows={1} />
-            <div className="composer-tools"><span className="composer-hint">↵ 发送 · Shift + Enter 换行</span><div className="composer-model-tools"><input ref={imageInputRef} className="image-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={!authenticated} onChange={(event) => { void addImageFiles(event.target.files); event.target.value = ""; }} /><Button type="button" variant="ghost" size="icon" className="attach-image-button" aria-label="上传图片" data-tooltip="上传图片（最多 4 张，每张不超过 4 MB）" disabled={!authenticated || loading || pendingImages.length >= 4} onClick={() => imageInputRef.current?.click()}><Paperclip aria-hidden="true" /></Button><Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}><PopoverTrigger asChild><Button type="button" variant="outline" className="model-select-wrap" aria-label="选择聊天模型" aria-haspopup="dialog" aria-expanded={modelMenuOpen} disabled={!authenticated}><span>◈</span><strong>{selectedModel ? selectedModel.name : "未选择模型"}</strong><ArrowDown aria-hidden="true" className="model-trigger-chevron" /></Button></PopoverTrigger>{modelMenuOpen && <PopoverContent side="top" align="start" sideOffset={8} className="model-dropdown" role="menu" aria-label="选择模型"><div className="model-dropdown-heading"><span>选择模型</span><Button type="button" variant="ghost" size="sm" className="model-dropdown-add" role="menuitem" onClick={() => { setModelMenuOpen(false); openModelModal(); }}><Plus aria-hidden="true" />添加自定义模型</Button></div>{Object.entries(modelGroups).map(([vendor, vendorModels]) => <div className="model-dropdown-group" key={vendor}><div className="model-dropdown-group-heading">{modelVendorLabel(vendor)}</div>{vendorModels.map((model) => <div className={`model-dropdown-row ${selectedModelId === model.id ? "selected" : ""}`} key={model.id}><Button type="button" variant="ghost" className="model-option-main" role="menuitemradio" aria-checked={selectedModelId === model.id} onClick={() => void chooseModel(model.id)}><span><strong>{model.name}</strong><small>{model.model} · {model.protocol.toUpperCase()}</small></span></Button><div className="model-option-actions"><Button type="button" variant="ghost" size="icon" className="model-action-button" title={`编辑 ${model.name}`} aria-label={`编辑 ${model.name}`} onClick={() => openModelModal(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></Button><Button type="button" variant="ghost" size="icon" className="model-action-button delete" title={`删除 ${model.name}`} aria-label={`删除 ${model.name}`} onClick={() => void deleteModel(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></Button></div></div>)}</div>)}{agnesPresetModels.length > 0 && <div className="model-dropdown-group"><div className="model-dropdown-group-heading">Agnes AI · 内置模型（需配置 API Key）</div>{agnesPresetModels.map((preset) => <div className="model-dropdown-row" key={preset.model}><Button type="button" variant="ghost" className="model-option-main" role="menuitem" onClick={() => addAgnesPreset(preset)}><span><strong>{preset.name}</strong><small>{preset.model} · CHAT</small></span></Button><Button type="button" variant="outline" size="sm" onClick={() => addAgnesPreset(preset)}>配置</Button></div>)}</div>}</PopoverContent>}</Popover><Button type="submit" variant="default" size="icon" className="composer-send-button" disabled={(!input.trim() && pendingImages.length === 0) || loading} aria-label="发送"><ArrowUp aria-hidden="true" /></Button></div></div>
+            <div className="composer-tools"><span className="composer-hint">↵ 发送 · Shift + Enter 换行</span><div className="composer-model-tools"><input ref={imageInputRef} className="image-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={!authenticated} onChange={(event) => { void addImageFiles(event.target.files); event.target.value = ""; }} /><Button type="button" variant="ghost" size="icon" className="attach-image-button" aria-label="上传图片" data-tooltip="上传图片（最多 4 张，每张不超过 4 MB）" disabled={!authenticated || loading || pendingImages.length >= 4} onClick={() => imageInputRef.current?.click()}><Paperclip aria-hidden="true" /></Button><Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}><PopoverTrigger asChild><Button type="button" variant="outline" className="model-select-wrap" aria-label="选择聊天模型" aria-haspopup="dialog" aria-expanded={modelMenuOpen} disabled={!authenticated}><span>◈</span><strong>{selectedModel ? selectedModel.name : "未选择模型"}</strong><ArrowDown aria-hidden="true" className="model-trigger-chevron" /></Button></PopoverTrigger>{modelMenuOpen && <PopoverContent side="top" align="start" sideOffset={8} className="model-dropdown" role="menu" aria-label="选择模型"><div className="model-dropdown-heading"><span>选择模型</span><Button type="button" variant="ghost" size="sm" className="model-dropdown-add" role="menuitem" onClick={() => { setModelMenuOpen(false); openModelModal(); }}><Plus aria-hidden="true" />添加自定义模型</Button></div><div className="model-dropdown-group"><div className="model-dropdown-group-heading">Agnes AI · 内置模型</div>{agnesBuiltinModels.map((preset) => { const model = preset.configured; return <div className={`model-dropdown-row ${model && selectedModelId === model.id ? "selected" : ""}`} key={preset.model}>{model ? <><Button type="button" variant="ghost" className="model-option-main" role="menuitemradio" aria-checked={selectedModelId === model.id} onClick={() => void chooseModel(model.id)}><span><strong>{model.name}</strong><small>{model.model} · {model.protocol.toUpperCase()}</small></span></Button><div className="model-option-actions"><Button type="button" variant="ghost" size="icon" className="model-action-button" title={`编辑 ${model.name}`} aria-label={`编辑 ${model.name}`} onClick={() => openModelModal(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></Button><Button type="button" variant="ghost" size="icon" className="model-action-button delete" title={`删除 ${model.name}`} aria-label={`删除 ${model.name}`} onClick={() => void deleteModel(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></Button></div></> : <><Button type="button" variant="ghost" className="model-option-main" role="menuitem" onClick={() => addAgnesPreset(preset)}><span><strong>{preset.name}</strong><small>{preset.model} · CHAT</small></span></Button><Button type="button" variant="outline" size="sm" onClick={() => addAgnesPreset(preset)}>配置</Button></>}</div>; })}</div>{Object.entries(modelGroups).map(([vendor, vendorModels]) => <div className="model-dropdown-group" key={vendor}><div className="model-dropdown-group-heading">{modelVendorLabel(vendor)}</div>{vendorModels.map((model) => <div className={`model-dropdown-row ${selectedModelId === model.id ? "selected" : ""}`} key={model.id}><Button type="button" variant="ghost" className="model-option-main" role="menuitemradio" aria-checked={selectedModelId === model.id} onClick={() => void chooseModel(model.id)}><span><strong>{model.name}</strong><small>{model.model} · {model.protocol.toUpperCase()}</small></span></Button><div className="model-option-actions"><Button type="button" variant="ghost" size="icon" className="model-action-button" title={`编辑 ${model.name}`} aria-label={`编辑 ${model.name}`} onClick={() => openModelModal(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></Button><Button type="button" variant="ghost" size="icon" className="model-action-button delete" title={`删除 ${model.name}`} aria-label={`删除 ${model.name}`} onClick={() => void deleteModel(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></Button></div></div>)}</div>)}</PopoverContent>}</Popover><Button type="submit" variant="default" size="icon" className="composer-send-button" disabled={(!input.trim() && pendingImages.length === 0) || loading} aria-label="发送"><ArrowUp aria-hidden="true" /></Button></div></div>
           </form>{error && <div className="error-banner">{error}<button onClick={() => setError("")}>×</button></div>}</div>
         </section>
 
@@ -1555,7 +1566,7 @@ function ChatApp({ authenticated, userId, username, startFreshSession, onRequire
 
 export default function Home() {
   type AuthProvider = { id: string; name: string };
-  type AuthUser = { id: number; username: string; local?: boolean; identities: Array<{ provider: string; providerUsername: string; providerDisplayName?: string; avatarUrl?: string }> };
+  type AuthUser = { id: number; username: string; local?: boolean; authProvider?: string | null; identities: Array<{ provider: string; providerUsername: string; providerDisplayName?: string; avatarUrl?: string }> };
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
   const [providers, setProviders] = useState<AuthProvider[]>([]);
   const [authError, setAuthError] = useState("");
@@ -1639,10 +1650,17 @@ export default function Home() {
   const openOAuthPopup = (provider: AuthProvider) => {
     setAuthError("");
     if (!providers.some((configured) => configured.id === provider.id)) {
-      setAuthError(`后端尚未配置 ${provider.name} 登录，请在 auth.json 中填写对应平台的 clientId 和 clientSecret。`);
+      const message = `后端尚未配置 ${provider.name} 登录，请在 auth.json 中填写对应平台的 clientId 和 clientSecret。`;
+      if (profileOpen) setProfileError(message);
+      else setAuthError(message);
       return;
     }
-    window.location.href = `/api/auth/oauth/${encodeURIComponent(provider.id)}`;
+    const popup = window.open(`/api/auth/oauth/${encodeURIComponent(provider.id)}?popup=1`, `little-sunshine-oauth-${provider.id}`, "popup,width=600,height=720,resizable=yes,scrollbars=yes");
+    if (!popup) {
+      const message = "浏览器阻止了授权弹窗，请允许此网站打开弹出窗口后重试。";
+      if (profileOpen) setProfileError(message);
+      else setAuthError(message);
+    }
   };
   const clearAuthCallbackQuery = (newSession = false) => {
     const url = new URL(window.location.href);
@@ -1673,7 +1691,7 @@ export default function Home() {
   };
   return <>
     {!user && <div className="guest-auth-bar"><button type="button" className="primary" onClick={() => openAuth("login")}>登录/注册</button></div>}
-    <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} startFreshSession={startFreshSession} onRequireLogin={() => openAuth("login")} onOpenProfile={() => { setProfileError(""); setProfileOpen(true); }} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); clearAuthCallbackQuery(); window.location.reload(); }} />
+    <ChatApp authenticated={Boolean(user)} userId={user?.id} username={user?.username} avatarUrl={user?.authProvider ? user.identities.find((identity) => identity.provider === user.authProvider)?.avatarUrl : undefined} startFreshSession={startFreshSession} onRequireLogin={() => openAuth("login")} onOpenProfile={() => { setProfileError(""); setProfileOpen(true); }} onLogout={async () => { await fetch("/api/auth/me", { method: "DELETE" }); clearAuthCallbackQuery(); window.location.reload(); }} />
     <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
       <DialogContent className="max-w-[480px] border-zinc-200 bg-white text-zinc-900">
         <DialogHeader>
