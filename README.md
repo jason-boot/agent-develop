@@ -11,7 +11,10 @@ npm install
 npm run dev
 ```
 
-前端地址为 http://localhost:3000，后端 API 监听 3001。开发时前端将 `/api/*` 转发到后端。
+- 前端：[http://localhost:3000](http://localhost:3000)
+- 后端 API：`http://127.0.0.1:3001`
+
+开发时前端将 `/api/*` 请求转发到后端。
 
 ## 构建与部署
 
