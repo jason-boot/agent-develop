@@ -4,6 +4,7 @@ import { answerQuestion } from "@/lib/agent";
 import { findModel, getModelStore, ModelServiceError, type AgentImageInput } from "@/lib/model-config";
 
 export const runtime = "nodejs";
+export const maxDuration = 600;
 
 const maxImagesPerMessage = 4;
 const maxImageDataLength = 6 * 1024 * 1024;
@@ -52,6 +53,7 @@ async function handlerPOST(request: Request) {
   try {
     const body = await request.json();
     const question = typeof body.question === "string" ? body.question.trim() : "";
+    const conversationId = typeof body.conversationId === "string" ? body.conversationId.trim() : "";
     const projectFiles = parseProjectFiles(body.projectFiles);
     let imageDataLength = 0;
     const currentImages = parseImages(body.images, imageDataLength);
@@ -79,7 +81,7 @@ async function handlerPOST(request: Request) {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         const send = (value: unknown) => controller.enqueue(encoder.encode(JSON.stringify(value) + "\n"));
-        void answerQuestion(question, model, (token) => send({ type: "token", token }), history, currentImages.images, projectFiles)
+        void answerQuestion(question, model, (token) => send({ type: "token", token }), history, currentImages.images, projectFiles, (status) => send({ type: "status", status }), conversationId)
           .then((result) => { send({ type: "done", result }); controller.close(); })
           .catch((error) => {
             console.error("Chat stream failed", error);

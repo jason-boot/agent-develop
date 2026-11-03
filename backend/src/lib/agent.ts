@@ -1,7 +1,10 @@
 import type { ChatReply, DailyModelUsage, ProjectFileChange, ToolTrace, UsageChartSpec, UsageRecord, UsageSummary } from "@little-sunshine/shared/types";
 import { callUsageMcpTool, connectLocalUsageMcpClient, connectUsageMcpClient } from "@/lib/usage-mcp";
 import { isDesktopMcpRuntime, listExternalMcpServers } from "@/lib/external-mcp-config";
-import { ModelServiceError, requestModelAgentTurn, type AgentImageInput, type AgentMessage, type AgentToolCall, type AgentToolDefinition, type ModelConfig } from "@/lib/model-config";
+import { ModelServiceError, requestImageGeneration, requestModelAgentTurn, type AgentImageInput, type AgentMessage, type AgentToolCall, type AgentToolDefinition, type ModelConfig } from "@/lib/model-config";
+import { callImageGenerationMcpTool, getImageGenerationMcpConfig, imageGenerationMcpTool } from "@/lib/image-generation-mcp";
+import { createVideoGenerationTask, getVideoGenerationConfig, videoGenerationMcpTool } from "@/lib/video-generation-mcp";
+import { getActiveWebSearchMcpConfig, isWebSearchToolName, webSearchProviderCatalog } from "@/lib/web-search-mcp";
 
 const emptySummary: UsageSummary = {
   requestCount: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, totalTokens: 0,
@@ -10,6 +13,12 @@ const emptySummary: UsageSummary = {
 
 function dayString(date: Date) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(date);
+}
+
+function modelVendorName(vendor: string, fallback: string) {
+  if (vendor === "aliyun-bailian") return "阿里云百炼";
+  if (vendor === "custom") return fallback || "当前模型服务";
+  return vendor || fallback || "当前模型服务";
 }
 
 function labelForRange(from?: string, to?: string) {
@@ -88,12 +97,19 @@ export async function answerQuestion(
   history: Array<{ role: "user" | "assistant"; content: string; images?: AgentImageInput[] }> = [],
   images: AgentImageInput[] = [],
   projectFiles?: Record<string, string>,
+  onStatus?: (status: string) => void,
+  conversationId = "",
 ): Promise<ChatReply> {
   if (!modelConfig) return messageOnlyReply("请先选择或配置一个模型，再开始聊天。", "model_unconfigured", onToken);
 
   const clients: McpConnection[] = [];
   try {
-    const allowed = new Map<string, { tool: McpListedTool; client?: McpConnection["client"]; remoteName: string; label: string }>();
+    const configuredImageMcp = await getImageGenerationMcpConfig();
+    const configuredVideoMcp = await getVideoGenerationConfig();
+    const configuredWebSearch = await getActiveWebSearchMcpConfig();
+    const legacyImageConfig = configuredImageMcp ? undefined : modelConfig.imageGeneration;
+    const imageToolEnabled = Boolean(configuredImageMcp?.enabled || legacyImageConfig);
+    const allowed = new Map<string, { tool: McpListedTool; client?: McpConnection["client"]; remoteName: string; label: string; webSearchProviderId?: string }>();
     const tools: AgentToolDefinition[] = [];
     const originalProjectFiles = projectFiles ? { ...projectFiles } : undefined;
     if (projectFiles) {
@@ -105,6 +121,32 @@ export async function answerQuestion(
       for (const tool of projectToolDefinitions) {
         allowed.set(tool.name, { tool: { name: tool.name, description: tool.description, inputSchema: tool.inputSchema } as McpListedTool, remoteName: tool.name, label: tool.name });
         tools.push(tool);
+      }
+    }
+    if (imageToolEnabled) {
+      allowed.set(imageGenerationMcpTool.name, { tool: imageGenerationMcpTool as McpListedTool, remoteName: imageGenerationMcpTool.name, label: "图片生成 MCP" });
+      tools.push(imageGenerationMcpTool);
+    }
+    if (configuredVideoMcp) {
+      allowed.set(videoGenerationMcpTool.name, { tool: videoGenerationMcpTool as McpListedTool, remoteName: videoGenerationMcpTool.name, label: "阿里云百炼视频生成" });
+      tools.push(videoGenerationMcpTool);
+    }
+    if (configuredWebSearch) {
+      try {
+        const remote = await connectUsageMcpClient(new URL(configuredWebSearch.endpoint), configuredWebSearch.apiKey || undefined);
+        clients.push(remote);
+        const { tools: remoteTools } = await remote.client.listTools();
+        const providerName = webSearchProviderCatalog[configuredWebSearch.providerId].name;
+        for (const tool of remoteTools.filter((item) => isWebSearchToolName(item.name))) {
+          if (tool.annotations?.destructiveHint === true) continue;
+          const exposedName = `websearch_${tool.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 50)}`;
+          if (allowed.has(exposedName)) continue;
+          allowed.set(exposedName, { tool, client: remote.client, remoteName: tool.name, label: `${providerName} 网页搜索`, webSearchProviderId: configuredWebSearch.providerId });
+          const flatArgsInstruction = configuredWebSearch.providerId === "firecrawl" ? " 参数必须是符合下方结构的扁平对象；直接传 query 等字段，不要再嵌套在 name/arguments 对象中。" : "";
+          tools.push({ name: exposedName, description: `${providerName} 网页搜索：${tool.description || tool.title || tool.name}${flatArgsInstruction}`, inputSchema: tool.inputSchema as Record<string, unknown> });
+        }
+      } catch {
+        // Search service outages should not prevent the assistant from answering other questions.
       }
     }
     const externalServers = await listExternalMcpServers();
@@ -131,7 +173,7 @@ export async function answerQuestion(
     const messages: AgentMessage[] = [
       {
         role: "system",
-        content: buildSystemPrompt(dayString(new Date()), Boolean(projectFiles)),
+        content: buildSystemPrompt(dayString(new Date()), Boolean(projectFiles)) + (imageToolEnabled ? "\n\n图片生成规则：用户明确要求生成或编辑图片时，调用 generate_image 工具；不要假装已生成。调用成功后再简短说明结果。" : "") + (configuredVideoMcp ? "\n\n视频生成规则：用户明确要求生成视频时，调用 generate_video 工具；不要把静态图片当成视频，也不要假装已生成。工具完成后再简短说明结果。" : "") + (configuredWebSearch ? `\n\n网页搜索规则：用户询问最新动态、当前事实、需要在线核实的信息或明确要求搜索网页时，优先调用当前启用的网页搜索工具。根据搜索结果回答并说明来源，不得编造搜索结果。${configuredWebSearch.providerId === "firecrawl" ? "调用 Firecrawl 工具时，arguments 必须是按工具 schema 填写的扁平参数对象，不要套 {name, arguments} 包装层。" : ""}` : ""),
       },
       ...history.map((message) => ({ role: message.role, content: message.content, ...(message.images?.length ? { images: message.images } : {}) })),
       { role: "user", content: question, ...(images.length ? { images } : {}) },
@@ -171,6 +213,8 @@ export async function answerQuestion(
     const trace: ToolTrace[] = [];
     let finished = false;
     const generatedImages: string[] = [];
+    const generatedVideos: string[] = [];
+    const generatedVideoTaskIds: string[] = [];
     let invalidToolArgumentRetries = 0;
 
     const maxTurns = projectFiles ? 24 : 5;
@@ -179,7 +223,8 @@ export async function answerQuestion(
       generatedImages.push(...turn.generatedImages);
       if (turn.generatedImages.length) {
         intent = "image_generation";
-        trace.push({ tool: "image_generation", label: "图像生成", detail: `生成 ${turn.generatedImages.length} 张图片` });
+        const providerName = modelVendorName(modelConfig.vendor, modelConfig.name);
+        trace.push({ tool: "image_generation", label: "图像生成", detail: `此图像由${providerName}厂商的${modelConfig.model}模型生成（共 ${turn.generatedImages.length} 张）` });
       }
       if (!turn.toolCalls.length) {
         finished = true;
@@ -193,6 +238,32 @@ export async function answerQuestion(
         if (!allowed.has(call.name)) throw new Error("模型请求了未授权的 MCP 工具，已拒绝执行。");
         const routedTool = allowed.get(call.name);
         if (!routedTool) throw new Error("模型请求了未授权的 MCP 工具，已拒绝执行。");
+        if (call.name === "generate_image" && imageToolEnabled) {
+          if (call.argumentError) throw new ModelServiceError(call.argumentError);
+          const prompt = typeof call.arguments.prompt === "string" ? call.arguments.prompt.trim() : "";
+          if (!prompt || prompt.length > 4000) throw new ModelServiceError("图片提示词不能为空，且不能超过 4000 个字符。");
+          const result = configuredImageMcp?.enabled
+            ? await callImageGenerationMcpTool({ prompt })
+            : { images: await requestImageGeneration(legacyImageConfig!, prompt) };
+          const images = result.images;
+          generatedImages.push(...images);
+          intent = "image_generation";
+          const providerName = configuredImageMcp?.providerId === "agnes" ? "Agnes" : configuredImageMcp?.providerId === "openai" ? "OpenAI" : configuredImageMcp?.providerId === "qwen" ? "阿里云百炼" : modelVendorName(modelConfig.vendor, modelConfig.name);
+          const modelName = configuredImageMcp?.model || legacyImageConfig?.model || "已配置模型";
+          trace.push({ tool: "image_generation", label: "图像生成", detail: `此图像由${providerName}厂商的${modelName}模型生成（共 ${images.length} 张）` });
+          messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify({ success: true, imageCount: images.length }) });
+          continue;
+        }
+        if (call.name === "generate_video" && configuredVideoMcp) {
+          if (call.argumentError) throw new ModelServiceError(call.argumentError);
+          const result = await createVideoGenerationTask(call.arguments, conversationId);
+          generatedVideoTaskIds.push(result.id);
+          intent = "video_generation";
+          onStatus?.("阿里云百炼已接收任务，视频将在后台继续生成…");
+          trace.push({ tool: "video_generation", label: "视频生成", detail: `已提交${result.provider}厂商的${result.model}模型任务（${result.duration} 秒，${result.resolution}）；后台将持续跟踪状态` });
+          messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify({ success: true, status: result.status, provider: result.provider, model: result.model, taskId: result.id }) });
+          continue;
+        }
         if (call.name.startsWith("project_")) intent = "project_coding";
         if (call.argumentError) {
           invalidToolArgumentRetries += 1;
@@ -222,7 +293,21 @@ export async function answerQuestion(
           output = { path, status: Object.hasOwn(originalProjectFiles || {}, path) ? "updated" : "created", awaitingUserApproval: true };
         } else {
           if (!routedTool.client) throw new Error("MCP 工具客户端不可用。");
-          output = await callUsageMcpTool(routedTool.client, routedTool.remoteName, call.arguments);
+          let toolArguments = call.arguments;
+          if (routedTool.webSearchProviderId === "firecrawl" && routedTool.remoteName === "firecrawl_search" && isObject(toolArguments.arguments)) {
+            // Some model providers copy Firecrawl's documentation envelope into the MCP call.
+            // MCP already supplies the tool name separately, so pass only the nested input.
+            toolArguments = toolArguments.arguments;
+          }
+          try {
+            output = await callUsageMcpTool(routedTool.client, routedTool.remoteName, toolArguments);
+          } catch (error) {
+            if (routedTool.webSearchProviderId) {
+              const providerName = webSearchProviderCatalog[routedTool.webSearchProviderId as keyof typeof webSearchProviderCatalog].name;
+              throw new ModelServiceError(`${providerName}搜索失败：${error instanceof Error ? error.message : "MCP 工具调用失败。"}`);
+            }
+            throw error;
+          }
         }
         messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(output) });
         const toolInfo = routedTool.tool;
@@ -247,6 +332,10 @@ export async function answerQuestion(
           detail,
         });
       }
+      if (generatedImages.length || generatedVideos.length || generatedVideoTaskIds.length) {
+        finished = true;
+        break;
+      }
       if (turnIndex === maxTurns - 1) throw new ModelServiceError(projectFiles ? "项目分析步骤较多，已达到本轮调用上限。请指定某个目录或模块后分批生成架构说明。" : "模型连续调用 MCP 工具次数过多，请缩小问题范围后重试。");
     }
 
@@ -259,8 +348,10 @@ export async function answerQuestion(
         const originalContent = originalProjectFiles?.[path];
         return { path, content, ...(originalContent !== undefined ? { originalContent, operation: "update" as const } : { operation: "create" as const }) };
       }) : [];
-    if (!answer && !chartSpec && !generatedImages.length && !projectChanges.length) throw new Error("模型服务没有生成最终回答，请重试。");
-    const finalAnswer = answer || (generatedImages.length ? "图片已生成。" : projectChanges.length ? "代码改动已生成，请检查差异后确认应用。" : "已根据查询数据生成图表。");
+    if (!answer && !chartSpec && !generatedImages.length && !generatedVideos.length && !generatedVideoTaskIds.length && !projectChanges.length) throw new Error("模型服务没有生成最终回答，请重试。");
+    const finalAnswer = generatedVideoTaskIds.length && !generatedVideos.length
+      ? `${answer ? `${answer}\n\n` : ""}阿里云百炼已接收视频生成任务，生成完成后会自动显示在这里。`
+      : answer || (generatedVideos.length ? "视频已生成。" : generatedImages.length ? "图片已生成。" : projectChanges.length ? "代码改动已生成，请检查差异后确认应用。" : "已根据查询数据生成图表。");
     const label = labelForRange(rangeFrom, rangeTo);
     return {
       answer: finalAnswer,
@@ -274,8 +365,10 @@ export async function answerQuestion(
       ...(dailyTrendQueried ? { dailyModelUsage } : {}),
       ...(chartSpec && dailyTrendQueried ? { chartSpec } : {}),
       ...(generatedImages.length ? { generatedImages } : {}),
+      ...(generatedVideos.length ? { generatedVideos } : {}),
+      ...(generatedVideoTaskIds.length ? { generatedVideoTaskIds } : {}),
       ...(projectChanges.length ? { projectChanges } : {}),
-      messageOnly: trace.length === 0 && generatedImages.length === 0 && projectChanges.length === 0,
+      messageOnly: trace.length === 0 && generatedImages.length === 0 && generatedVideos.length === 0 && generatedVideoTaskIds.length === 0 && projectChanges.length === 0,
       showRecords: showRecordDetails,
     };
   } finally {

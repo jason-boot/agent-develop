@@ -14,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { diffLines } from "diff";
-import { ArrowDown, ArrowUp, ChevronDown, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Plus, Trash2, TriangleAlert, UserRound, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, Download, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Plus, Trash2, TriangleAlert, UserRound, X } from "lucide-react";
 
 type ImageAttachment = { id: string; name: string; mimeType: "image/jpeg" | "image/png" | "image/webp"; dataUrl: string };
 type Message = { role: "assistant" | "user"; content: string; images?: ImageAttachment[]; generatedImages?: string[]; result?: ChatReply; projectId?: string; error?: boolean };
@@ -28,11 +28,29 @@ const formatDateTime = (timestamp?: number) => {
 };
 type LocalProject = { id: string; name: string };
 type ModelProtocol = "chat" | "messages" | "responses";
-type ModelProfile = { id: string; name: string; protocol: ModelProtocol; baseUrl: string; fullAddress: boolean; model: string; vendor: string; modelsUrl: string; hasApiKey: boolean };
+type ImageGenerationProviderId = "agnes" | "openai" | "qwen";
+type WebSearchProviderId = "tavily" | "exa" | "firecrawl";
+type WebSearchMcpProfile = { enabled: boolean; activeProvider: WebSearchProviderId | null; providers: Partial<Record<WebSearchProviderId, { endpoint: string; hasApiKey: boolean }>> };
+const webSearchProviderCatalog: Array<{ id: WebSearchProviderId; name: string; endpoint: string; description: string; requiresApiKey: boolean }> = [
+  { id: "exa", name: "Exa", endpoint: "https://mcp.exa.ai/mcp", description: "网页搜索与内容检索", requiresApiKey: false },
+  { id: "firecrawl", name: "Firecrawl", endpoint: "https://mcp.firecrawl.dev/v2/mcp", description: "网页搜索与网页内容抓取", requiresApiKey: true },
+  { id: "tavily", name: "Tavily", endpoint: "https://mcp.tavily.com/mcp", description: "实时网页搜索与内容提取", requiresApiKey: true },
+];
+type QwenImageRegion = "beijing" | "singapore" | "virginia" | "frankfurt" | "tokyo";
+type ImageGenerationProviderProfile = { provider: "openai-images" | "qwen-dashscope"; baseUrl: string; fullAddress: boolean; model: string; size: string; hasApiKey: boolean };
+type ModelProfile = { id: string; name: string; protocol: ModelProtocol; baseUrl: string; fullAddress: boolean; model: string; imageGeneration?: ImageGenerationProviderProfile; vendor: string; modelsUrl: string; hasApiKey: boolean };
+type ImageGenerationMcpProfile = { enabled: boolean; activeProvider: ImageGenerationProviderId | null; providers: Partial<Record<ImageGenerationProviderId, ImageGenerationProviderProfile>> };
+const imageGenerationProviderCatalog: Array<{ id: ImageGenerationProviderId; name: string; baseUrl: string; model: string; size: string; description: string }> = [
+  { id: "agnes", name: "Agnes", baseUrl: "https://apihub.agnes-ai.com/v1", model: "agnes-image-2.5-flash", size: "1K", description: "OpenAI Images 兼容接口" },
+  { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-image-2.5-sunburst", size: "1024x1024", description: "OpenAI Images API" },
+  { id: "qwen", name: "阿里云百炼", baseUrl: "", model: "qwen-image-3.0-pro", size: "1024x1024", description: "通义千问图像模型 · 百炼地域 API" },
+];
 type ModelList = { models: ModelProfile[]; defaultModelId: string | null };
 type ProviderModelRow = { displayName: string; upstreamModel: string };
 type ModelVendor = "aliyun-bailian" | "custom";
 type BailianRegion = "beijing" | "singapore" | "hong-kong" | "tokyo" | "frankfurt" | "virginia";
+type BailianVideoRegion = BailianRegion;
+type VideoGenerationProfile = { enabled: boolean; provider: "aliyun-bailian"; region: BailianVideoRegion; workspaceId: string; model: "wan3.0-video" | "wan3.0-video-prime"; resolution: "480P" | "720P" | "1080P"; duration: number; hasApiKey: boolean; baseUrl: string };
 type McpTool = { name: string; title?: string; description?: string; enabled: boolean; readOnly?: boolean; destructive?: boolean; manuallyAllowed?: boolean; canEnable?: boolean };
 type ExternalMcpServer = { id: string; name: string; transport: "http" | "stdio"; url: string; command: string; args: string[]; cwd: string; envKeys: string[]; enabled: boolean; hasToken: boolean; hasEnv: boolean };
 type StoredProjectDirectory = { id: string; name: string; handle: FileSystemDirectoryHandle; ownerId?: number; storageKey?: string };
@@ -199,6 +217,37 @@ function bailianModelsUrl(region: BailianRegion, workspaceId: string) {
     virginia: "us-east-1.maas.aliyuncs.com",
   };
   return workspace ? `https://${workspace}.${endpoints[region]}/api/v1/models` : "";
+}
+const bailianVideoRegionHosts: Record<BailianVideoRegion, string> = {
+  beijing: "cn-beijing.maas.aliyuncs.com",
+  singapore: "ap-southeast-1.maas.aliyuncs.com",
+  tokyo: "ap-northeast-1.maas.aliyuncs.com",
+  frankfurt: "eu-central-1.maas.aliyuncs.com",
+  virginia: "us-east-1.maas.aliyuncs.com",
+  "hong-kong": "cn-hongkong.maas.aliyuncs.com",
+};
+function bailianVideoBaseUrl(region: BailianVideoRegion, workspaceId: string) {
+  const workspace = workspaceId.trim();
+  return workspace ? `https://${workspace}.${bailianVideoRegionHosts[region]}` : "";
+}
+const qwenImageRegionHosts: Record<QwenImageRegion, string> = {
+  beijing: "cn-beijing.maas.aliyuncs.com",
+  singapore: "ap-southeast-1.maas.aliyuncs.com",
+  virginia: "us-east-1.maas.aliyuncs.com",
+  frankfurt: "eu-central-1.maas.aliyuncs.com",
+  tokyo: "ap-northeast-1.maas.aliyuncs.com",
+};
+function qwenImageBaseUrl(region: QwenImageRegion, workspaceId: string) {
+  const workspace = workspaceId.trim();
+  return workspace ? `https://${workspace}.${qwenImageRegionHosts[region]}/compatible-mode/v1` : "";
+}
+function parseQwenImageEndpoint(baseUrl: string): { region: QwenImageRegion; workspaceId: string } | null {
+  try {
+    const parsed = new URL(baseUrl);
+    const match = (Object.entries(qwenImageRegionHosts) as Array<[QwenImageRegion, string]>).find(([, suffix]) => parsed.hostname.endsWith(`.${suffix}`));
+    if (!match || parsed.pathname.replace(/\/+$/, "") !== "/compatible-mode/v1") return null;
+    return { region: match[0], workspaceId: parsed.hostname.slice(0, -(match[1].length + 1)) };
+  } catch { return null; }
 }
 function parseBailianLocation(modelsUrl: string): { region: BailianRegion; workspaceId: string } | null {
   try {
@@ -467,6 +516,8 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [conversationStorageReady, setConversationStorageReady] = useState(false);
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [input, setInput] = useState("");
+  const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
+  const promptHistoryDraftRef = useRef("");
   const [pendingImages, setPendingImages] = useState<ImageAttachment[]>([]);
   const [projects, setProjects] = useState<LocalProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -477,6 +528,8 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [appliedProjectChangeIndexes, setAppliedProjectChangeIndexes] = useState<number[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [assistantStatus, setAssistantStatus] = useState("");
+  const [imageDownloading, setImageDownloading] = useState(false);
   const [models, setModels] = useState<ModelProfile[]>([]);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -494,6 +547,39 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [modelFullAddress, setModelFullAddress] = useState(false);
   const [modelListUrl, setModelListUrl] = useState("");
   const [modelId, setModelId] = useState("");
+  const [imageGenerationProvider, setImageGenerationProvider] = useState<ImageGenerationProviderId>("agnes");
+  const [imageGenerationBaseUrl, setImageGenerationBaseUrl] = useState("");
+  const [imageGenerationFullAddress, setImageGenerationFullAddress] = useState(false);
+  const [qwenImageRegion, setQwenImageRegion] = useState<QwenImageRegion>("beijing");
+  const [qwenImageWorkspaceId, setQwenImageWorkspaceId] = useState("");
+  const [imageGenerationModel, setImageGenerationModel] = useState("");
+  const [imageGenerationApiKey, setImageGenerationApiKey] = useState("");
+  const [imageGenerationSize, setImageGenerationSize] = useState("1024x1024");
+  const [imageMcpHasKey, setImageMcpHasKey] = useState(false);
+  const [imageMcpSaving, setImageMcpSaving] = useState(false);
+  const [imageMcpActivating, setImageMcpActivating] = useState<ImageGenerationProviderId | null>(null);
+  const [imageMcpFeedback, setImageMcpFeedback] = useState("");
+  const [imageMcpSettings, setImageMcpSettings] = useState<ImageGenerationMcpProfile>({ enabled: false, activeProvider: null, providers: {} });
+  const [imageMcpEditorOpen, setImageMcpEditorOpen] = useState(false);
+  const [webSearchSettings, setWebSearchSettings] = useState<WebSearchMcpProfile>({ enabled: false, activeProvider: null, providers: {} });
+  const [webSearchProvider, setWebSearchProvider] = useState<WebSearchProviderId>("exa");
+  const [webSearchApiKey, setWebSearchApiKey] = useState("");
+  const [webSearchHasKey, setWebSearchHasKey] = useState(false);
+  const [webSearchSaving, setWebSearchSaving] = useState(false);
+  const [webSearchActivating, setWebSearchActivating] = useState<WebSearchProviderId | null>(null);
+  const [webSearchFeedback, setWebSearchFeedback] = useState("");
+  const [webSearchEditorOpen, setWebSearchEditorOpen] = useState(false);
+  const [videoMcpSettings, setVideoMcpSettings] = useState<VideoGenerationProfile>({ enabled: false, provider: "aliyun-bailian", region: "beijing", workspaceId: "", model: "wan3.0-video", resolution: "720P", duration: 5, hasApiKey: false, baseUrl: "" });
+  const [videoMcpEditorOpen, setVideoMcpEditorOpen] = useState(false);
+  const [videoMcpRegion, setVideoMcpRegion] = useState<BailianVideoRegion>("beijing");
+  const [videoMcpWorkspaceId, setVideoMcpWorkspaceId] = useState("");
+  const [videoMcpModel, setVideoMcpModel] = useState<"wan3.0-video" | "wan3.0-video-prime">("wan3.0-video");
+  const [videoMcpResolution, setVideoMcpResolution] = useState<"480P" | "720P" | "1080P">("720P");
+  const [videoMcpDuration, setVideoMcpDuration] = useState("5");
+  const [videoMcpApiKey, setVideoMcpApiKey] = useState("");
+  const [videoMcpHasKey, setVideoMcpHasKey] = useState(false);
+  const [videoMcpSaving, setVideoMcpSaving] = useState(false);
+  const [videoMcpFeedback, setVideoMcpFeedback] = useState("");
   const [modelApiKey, setModelApiKey] = useState("");
   const [modelSaving, setModelSaving] = useState(false);
   const [modelTesting, setModelTesting] = useState(false);
@@ -510,6 +596,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [modelToDelete, setModelToDelete] = useState<ModelProfile | null>(null);
   const [modelDeleting, setModelDeleting] = useState(false);
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
+  const [mcpManagerCategory, setMcpManagerCategory] = useState<"image-generation" | "video-generation" | "web-search" | "external">("image-generation");
   const [externalMcpRuntime, setExternalMcpRuntime] = useState<"web" | "desktop">("web");
   const [externalMcpServers, setExternalMcpServers] = useState<ExternalMcpServer[]>([]);
   const [externalMcpTools, setExternalMcpTools] = useState<Record<string, McpTool[]>>({});
@@ -676,6 +763,35 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     return () => window.clearInterval(timer);
   }, [activeConversationId, authenticated, conversationDeleting, conversationProjectId, conversationRenaming, conversationStorageReady, loading, projectConversationMode, projectDeleting, projects]);
 
+  useEffect(() => {
+    if (!authenticated || !conversationStorageReady || !activeConversationId) return;
+    let stopped = false;
+    const refreshVideoTasks = async () => {
+      try {
+        const response = await fetch(`/api/mcp/video-generation/tasks?conversationId=${encodeURIComponent(activeConversationId)}`, { cache: "no-store" });
+        if (!response.ok) return;
+        const data = await response.json() as { tasks?: Array<{ id: string; status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED"; videoUrl?: string; error?: string }> };
+        if (stopped || !Array.isArray(data.tasks) || !data.tasks.length) return;
+        const tasksById = new Map(data.tasks.map((task) => [task.id, task]));
+        setMessages((items) => items.map((message) => {
+          if (message.role !== "assistant" || !message.result?.generatedVideoTaskIds?.length) return message;
+          const generatedVideoTasks = message.result.generatedVideoTaskIds.map((id) => tasksById.get(id)).filter((task): task is NonNullable<typeof task> => Boolean(task)).map(({ id, status, videoUrl, error }) => ({ id, status, ...(videoUrl ? { videoUrl } : {}), ...(error ? { error } : {}) }));
+          if (!generatedVideoTasks.length) return message;
+          const generatedVideos = [...(message.result.generatedVideos || [])];
+          for (const task of generatedVideoTasks) if (task.status === "SUCCEEDED" && task.videoUrl && !generatedVideos.includes(task.videoUrl)) generatedVideos.push(task.videoUrl);
+          const priorTasks = message.result.generatedVideoTasks || [];
+          const tasksUnchanged = generatedVideoTasks.length === priorTasks.length && generatedVideoTasks.every((task, index) => task.id === priorTasks[index]?.id && task.status === priorTasks[index]?.status && task.videoUrl === priorTasks[index]?.videoUrl && task.error === priorTasks[index]?.error);
+          const videosUnchanged = generatedVideos.length === (message.result.generatedVideos || []).length;
+          if (tasksUnchanged && videosUnchanged) return message;
+          return { ...message, result: { ...message.result, generatedVideoTasks, ...(generatedVideos.length ? { generatedVideos } : {}) } };
+        }));
+      } catch { /* Task status is refreshed on the next interval or conversation open. */ }
+    };
+    void refreshVideoTasks();
+    const timer = window.setInterval(() => void refreshVideoTasks(), 120_000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [activeConversationId, authenticated, conversationStorageReady]);
+
   function startNewConversation() {
     if (loading) return;
     setActiveConversationId("");
@@ -684,6 +800,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     setProjectConversationMode(false);
     setMessages([{ role: "assistant", content: welcome }]);
     setInput("");
+    setPromptHistoryIndex(null); promptHistoryDraftRef.current = "";
     setPendingImages([]);
     setAppliedProjectChangeIndexes([]);
     setError("");
@@ -796,6 +913,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       setMessages(openedConversation.messages || []);
       setAppliedProjectChangeIndexes([]);
       setInput("");
+      setPromptHistoryIndex(null); promptHistoryDraftRef.current = "";
       setPendingImages([]);
       setError("");
     } catch (e) { setError(e instanceof Error ? e.message : "读取本地会话失败。"); }
@@ -1014,11 +1132,11 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       ...(images?.length && messagesWithImages.has(index) ? { images: images.map(({ mimeType, dataUrl }) => ({ mimeType, dataUrl })) } : {}),
     }));
     setActiveConversationId(conversationId);
-    setError(""); setInput(""); setPendingImages([]); if (imageInputRef.current) imageInputRef.current.value = "";
-    setMessages((items) => items.length === 1 && items[0].content === welcome ? [{ role: "user", content: value, ...(imagesToSend.length ? { images: imagesToSend } : {}) }] : [...items, { role: "user", content: value, ...(imagesToSend.length ? { images: imagesToSend } : {}) }]); setLoading(true);
+    setError(""); setInput(""); setPromptHistoryIndex(null); promptHistoryDraftRef.current = ""; setPendingImages([]); if (imageInputRef.current) imageInputRef.current.value = "";
+    setAssistantStatus(""); setMessages((items) => items.length === 1 && items[0].content === welcome ? [{ role: "user", content: value, ...(imagesToSend.length ? { images: imagesToSend } : {}) }] : [...items, { role: "user", content: value, ...(imagesToSend.length ? { images: imagesToSend } : {}) }]); setLoading(true);
     try {
       const projectFiles = requestProjectDirectory ? await readProjectSnapshot(requestProjectDirectory) : undefined;
-      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: value, images: imagesToSend.map(({ mimeType, dataUrl }) => ({ mimeType, dataUrl })), modelId: selectedModelId || null, history, ...(projectFiles ? { projectFiles } : {}) }) });
+      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: value, conversationId, images: imagesToSend.map(({ mimeType, dataUrl }) => ({ mimeType, dataUrl })), modelId: selectedModelId || null, history, ...(projectFiles ? { projectFiles } : {}) }) });
       const contentType = response.headers.get("content-type") || "";
       if (!response.ok) {
         let apiError = "";
@@ -1045,9 +1163,10 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       let completed = false;
       const consumeLine = (line: string) => {
         if (!line.trim()) return;
-        const event = JSON.parse(line) as { type: string; token?: string; error?: string; result?: ChatReply };
+        const event = JSON.parse(line) as { type: string; token?: string; status?: string; error?: string; result?: ChatReply };
         const token = event.token || "";
         if (event.type === "token" && token) {
+          setAssistantStatus("");
           setMessages((items) => {
             const next = [...items];
             const last = next[next.length - 1];
@@ -1055,9 +1174,11 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
             else next.push({ role: "assistant", content: token });
             return next;
           });
-        } else if (event.type === "error") throw new Error(event.error || "查询失败");
+        } else if (event.type === "status") setAssistantStatus(event.status || "");
+        else if (event.type === "error") throw new Error(event.error || "查询失败");
         else if (event.type === "done" && event.result) {
           completed = true;
+          setAssistantStatus("");
           const result = event.result;
           setMessages((items) => {
             const next = [...items];
@@ -1081,6 +1202,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       } finally { reader.releaseLock(); }
       if (!completed) throw new Error("流式响应意外结束，请重试。");
     } catch (e) {
+      setAssistantStatus("");
       const errorMessage = e instanceof TypeError && /fetch/i.test(e.message)
         ? "无法连接到后端服务，请检查后端进程和 Nginx 的 /api 转发配置。"
         : e instanceof Error ? e.message : "查询失败";
@@ -1089,7 +1211,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
         return [...next, { role: "assistant", content: errorMessage, error: true }];
       });
     }
-    finally { setLoading(false); }
+    finally { setAssistantStatus(""); setLoading(false); }
   }
 
   async function copyMessage(content: string, index: number) {
@@ -1100,6 +1222,27 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     } catch {
       setError("复制失败，请检查应用的剪贴板权限。");
     }
+  }
+
+  async function downloadGeneratedImage(imageUrl: string, imageIndex: number) {
+    if (imageDownloading) return;
+    setImageDownloading(true);
+    try {
+      const response = await fetch("/api/images/download", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: imageUrl, index: imageIndex + 1 }) });
+      if (!response.ok) {
+        const data = await readApiJson<{ error?: string }>(response);
+        throw new Error(data.error || "下载图片失败。");
+      }
+      const blob = await response.blob();
+      const extension = blob.type === "image/jpeg" ? "jpg" : blob.type.split("/")[1] || "png";
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl; link.download = `little-sunshine-generated-${imageIndex + 1}.${extension}`;
+      document.body.appendChild(link); link.click(); link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "下载图片失败。");
+    } finally { setImageDownloading(false); }
   }
 
   async function persistModelList(response: Response, preferredId?: string) {
@@ -1274,14 +1417,105 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   async function openMcpTools() {
     setMcpModalOpen(true);
     try {
-      const serverResponse = await fetch("/api/mcp/servers");
+      const [serverResponse, imageResponse, videoResponse, webSearchResponse] = await Promise.all([fetch("/api/mcp/servers"), fetch("/api/mcp/image-generation"), fetch("/api/mcp/video-generation"), fetch("/api/mcp/web-search")]);
       const serverData = await serverResponse.json() as { servers?: ExternalMcpServer[]; runtime?: "web" | "desktop"; error?: string };
-      if (!serverResponse.ok) throw new Error(serverData.error || "读取外部 MCP 配置失败。");
+      if (!serverResponse.ok) throw new Error(serverData.error || "读取其他工具配置失败。");
       setExternalMcpServers(serverData.servers || []);
       setExternalMcpRuntime(serverData.runtime === "desktop" ? "desktop" : "web");
+      if (imageResponse.ok) {
+        setImageMcpSettings(await imageResponse.json() as ImageGenerationMcpProfile);
+      }
+      if (videoResponse.ok) setVideoMcpSettings(await videoResponse.json() as VideoGenerationProfile);
+      if (webSearchResponse.ok) setWebSearchSettings(await webSearchResponse.json() as WebSearchMcpProfile);
     } catch (e) {
-      setExternalMcpError(e instanceof Error ? e.message : "读取外部 MCP 配置失败。");
+      setExternalMcpError(e instanceof Error ? e.message : "读取其他工具配置失败。");
     }
+  }
+
+  function openImageGenerationEditor(providerId: ImageGenerationProviderId) {
+    const preset = imageGenerationProviderCatalog.find((provider) => provider.id === providerId)!;
+    const config = imageMcpSettings.providers[providerId];
+    const qwenLocation = providerId === "qwen" && config ? parseQwenImageEndpoint(config.baseUrl) : null;
+    setImageGenerationProvider(providerId);
+    if (providerId === "qwen") {
+      const region = qwenLocation?.region || "beijing";
+      const workspaceId = qwenLocation?.workspaceId || "";
+      setQwenImageRegion(region); setQwenImageWorkspaceId(workspaceId); setImageGenerationBaseUrl(qwenImageBaseUrl(region, workspaceId));
+    } else setImageGenerationBaseUrl(config?.baseUrl || preset.baseUrl);
+    setImageGenerationFullAddress(providerId === "qwen" ? false : Boolean(config?.fullAddress));
+    setImageGenerationModel(config?.model || preset.model);
+    setImageGenerationSize((providerId === "qwen" ? config?.size?.replace("*", "x") : config?.size) || preset.size);
+    setImageGenerationApiKey("");
+    setImageMcpHasKey(Boolean(config?.hasApiKey));
+    setImageMcpFeedback("");
+    setImageMcpEditorOpen(true);
+  }
+
+  async function saveImageGenerationMcp() {
+    setImageMcpSaving(true); setImageMcpFeedback("");
+    try {
+      const response = await fetch("/api/mcp/image-generation", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: imageGenerationProvider, baseUrl: imageGenerationBaseUrl, fullAddress: imageGenerationProvider === "qwen" ? false : imageGenerationFullAddress, model: imageGenerationModel, apiKey: imageGenerationApiKey, size: imageGenerationSize, activate: true }) });
+      const data = await readApiJson<ImageGenerationMcpProfile & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "保存图像生成配置失败。");
+      setImageMcpSettings(data); setImageGenerationApiKey(""); setImageMcpHasKey(Boolean(data.providers[imageGenerationProvider]?.hasApiKey)); setImageMcpFeedback("图像生成配置已保存并启用。"); setImageMcpEditorOpen(false);
+    } catch (error) { setImageMcpFeedback(error instanceof Error ? error.message : "保存图像生成配置失败。"); }
+    finally { setImageMcpSaving(false); }
+  }
+
+  function openVideoGenerationEditor() {
+    setVideoMcpRegion(videoMcpSettings.region); setVideoMcpWorkspaceId(videoMcpSettings.workspaceId);
+    setVideoMcpModel(videoMcpSettings.model); setVideoMcpResolution(videoMcpSettings.resolution);
+    setVideoMcpDuration(String(videoMcpSettings.duration)); setVideoMcpApiKey("");
+    setVideoMcpHasKey(videoMcpSettings.hasApiKey); setVideoMcpFeedback(""); setVideoMcpEditorOpen(true);
+  }
+
+  async function saveVideoGenerationMcp() {
+    setVideoMcpSaving(true); setVideoMcpFeedback("");
+    try {
+      const response = await fetch("/api/mcp/video-generation", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ region: videoMcpRegion, workspaceId: videoMcpWorkspaceId, model: videoMcpModel, apiKey: videoMcpApiKey, resolution: videoMcpResolution, duration: Number(videoMcpDuration), enabled: true }) });
+      const data = await readApiJson<VideoGenerationProfile & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "保存视频生成配置失败。");
+      setVideoMcpSettings(data); setVideoMcpApiKey(""); setVideoMcpHasKey(data.hasApiKey); setVideoMcpFeedback("视频生成配置已保存并启用。"); setVideoMcpEditorOpen(false);
+    } catch (error) { setVideoMcpFeedback(error instanceof Error ? error.message : "保存视频生成配置失败。"); }
+    finally { setVideoMcpSaving(false); }
+  }
+
+  async function activateImageGenerationProvider(providerId: ImageGenerationProviderId) {
+    setImageMcpActivating(providerId); setImageMcpFeedback("");
+    try {
+      const response = await fetch("/api/mcp/image-generation", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId, activate: true }) });
+      const data = await readApiJson<ImageGenerationMcpProfile & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "切换图像生成服务商失败。");
+      setImageMcpSettings(data);
+    } catch (error) { setImageMcpFeedback(error instanceof Error ? error.message : "切换图像生成服务商失败。"); }
+    finally { setImageMcpActivating(null); }
+  }
+
+  function openWebSearchEditor(providerId: WebSearchProviderId) {
+    const config = webSearchSettings.providers[providerId];
+    setWebSearchProvider(providerId); setWebSearchApiKey(""); setWebSearchHasKey(Boolean(config?.hasApiKey)); setWebSearchFeedback(""); setWebSearchEditorOpen(true);
+  }
+
+  async function saveWebSearchMcp() {
+    setWebSearchSaving(true); setWebSearchFeedback("");
+    try {
+      const response = await fetch("/api/mcp/web-search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: webSearchProvider, apiKey: webSearchApiKey, activate: true }) });
+      const data = await readApiJson<WebSearchMcpProfile & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "保存网页搜索配置失败。");
+      setWebSearchSettings(data); setWebSearchApiKey(""); setWebSearchHasKey(Boolean(data.providers[webSearchProvider]?.hasApiKey)); setWebSearchEditorOpen(false); setWebSearchFeedback("网页搜索配置已保存并启用。");
+    } catch (error) { setWebSearchFeedback(error instanceof Error ? error.message : "保存网页搜索配置失败。"); }
+    finally { setWebSearchSaving(false); }
+  }
+
+  async function activateWebSearchProvider(providerId: WebSearchProviderId) {
+    setWebSearchActivating(providerId); setWebSearchFeedback("");
+    try {
+      const response = await fetch("/api/mcp/web-search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "activate", providerId }) });
+      const data = await readApiJson<WebSearchMcpProfile & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "切换网页搜索服务商失败。");
+      setWebSearchSettings(data);
+    } catch (error) { setWebSearchFeedback(error instanceof Error ? error.message : "切换网页搜索服务商失败。"); }
+    finally { setWebSearchActivating(null); }
   }
 
   function openExternalMcpEditor() {
@@ -1329,9 +1563,9 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "inspect", id: server.id }) });
       const data = await readApiJson<{ tools?: McpTool[]; error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || "读取外部 MCP 工具失败。");
+      if (!response.ok) throw new Error(data.error || "读取其他工具失败。");
       setExternalMcpTools((items) => ({ ...items, [server.id]: data.tools || [] }));
-    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "读取外部 MCP 工具失败。"); }
+    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "读取其他工具失败。"); }
     finally { setExternalMcpLoading(""); }
   }
 
@@ -1352,9 +1586,9 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle-tool", id: server.id, name: tool.name, enabled: !tool.enabled }) });
       const data = await readApiJson<{ enabled?: boolean; manuallyAllowed?: boolean; error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || "更新外部 MCP 工具状态失败。");
+      if (!response.ok) throw new Error(data.error || "更新其他工具状态失败。");
       setExternalMcpTools((items) => ({ ...items, [server.id]: (items[server.id] || []).map((item) => item.name === tool.name ? { ...item, enabled: Boolean(data.enabled), manuallyAllowed: Boolean(data.manuallyAllowed) } : item) }));
-    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "更新外部 MCP 工具状态失败。"); }
+    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "更新其他工具状态失败。"); }
     finally { setExternalMcpUpdating(""); }
   }
 
@@ -1389,6 +1623,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     return [...groups.values()];
   })();
   const recentConversations = conversations.filter((conversation) => !conversation.projectId);
+  const recentPromptHistory = messages.filter((message) => message.role === "user" && message.content.trim()).slice(-5).reverse();
   const showWelcome = messages.length === 1 && messages[0].role === "assistant" && messages[0].content === welcome;
 
   return <main className="app-shell">
@@ -1417,16 +1652,35 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
             </div> : messages.map((message, index) => <div className={"message-row " + message.role} key={index}>
               <div className={"message-avatar " + message.role}>{message.role === "assistant" ? <SunIcon /> : "U"}</div>
               <div className="message-body"><div className="message-meta"><strong>{message.role === "assistant" ? "Little Sunshine" : "你"}</strong><span>{message.role === "assistant" ? "助手" : "刚刚"}</span></div><div className={"bubble " + message.role + (message.error ? " error" : "")}>{message.content && (message.role === "assistant" ? <MarkdownContent content={message.content} /> : message.content)}{message.role === "user" && message.images?.length ? <div className="message-image-list">{message.images.map((image) => <img key={image.id} src={image.dataUrl} alt={image.name || "用户发送的图片"} />)}</div> : null}</div><button type="button" className="message-copy" aria-label={copiedMessageIndex === index ? "已复制" : "复制消息"} title={copiedMessageIndex === index ? "已复制" : "复制消息"} onClick={() => void copyMessage(message.content, index)}>{copiedMessageIndex === index ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2"/></svg>}</button>
-                {message.role === "assistant" && message.result?.generatedImages?.length ? <div className="generated-image-list">{message.result.generatedImages.map((image, imageIndex) => <figure key={imageIndex}><a href={image} target="_blank" rel="noreferrer"><img src={image} alt={`模型生成的图片 ${imageIndex + 1}`} /></a><a className="generated-image-download" href={image} download={`little-sunshine-generated-${imageIndex + 1}.png`}>下载图片</a></figure>)}</div> : null}
+                {message.role === "assistant" && message.result?.generatedImages?.length ? <div className="generated-image-list">{message.result.generatedImages.map((image, imageIndex) => <figure key={imageIndex}><a href={image} target="_blank" rel="noreferrer"><img src={image} alt={`模型生成的图片 ${imageIndex + 1}`} /></a><button type="button" className="generated-image-download" onClick={() => void downloadGeneratedImage(image, imageIndex)} disabled={imageDownloading} aria-label={`另存图片 ${imageIndex + 1}`} title={imageDownloading ? "正在下载…" : "另存图片到本地"}><Download aria-hidden="true" /></button></figure>)}</div> : null}
+                {message.role === "assistant" && message.result?.generatedVideos?.length ? <div className="generated-video-list">{message.result.generatedVideos.map((video, videoIndex) => <figure key={videoIndex}><video src={video} controls playsInline preload="metadata" aria-label={`阿里云百炼生成的视频 ${videoIndex + 1}`} /><a href={video} target="_blank" rel="noreferrer">在新标签页打开视频</a></figure>)}</div> : null}
+                {message.role === "assistant" && message.result?.generatedVideoTaskIds?.map((taskId) => { const task = message.result?.generatedVideoTasks?.find((item) => item.id === taskId); if (task?.status === "SUCCEEDED") return null; return <p className={`generated-video-task-status${task?.status === "FAILED" ? " failed" : ""}`} key={taskId}>{task?.status === "FAILED" ? task.error || "视频生成失败。" : "阿里云百炼正在生成视频，完成后会自动显示…"}</p>; })}
                 {message.result && <>{message.result.dailyModelUsage && message.result.chartSpec && <DailyModelTrendChart points={message.result.dailyModelUsage} chartSpec={message.result.chartSpec} from={message.result.from || ""} to={message.result.to || ""} />}{message.result.showRecords && <><div className="answer-footnote">⌕ 查询范围：{message.result.periodLabel} · 返回 {message.result.records.length} 条记录</div><ChatResultList records={message.result.records} /></>}{message.result.projectChanges?.length ? <section className="project-changes"><div><strong>代码改动</strong><small>{projects.find((project) => project.id === message.projectId)?.name || "项目"} · {message.result.projectChanges.length} 个文件 · 确认后写入本地目录</small></div><details><summary>查看差异</summary>{message.result.projectChanges.map((change) => <section className="project-change-diff" key={change.path}><strong>{change.operation === "create" ? "新增" : "修改"} · {change.path}</strong><ProjectFileDiff change={change} /></section>)}</details><Button type="button" variant="outline" disabled={!message.projectId || !projectDirectoriesRef.current.has(message.projectId) || applyingProjectChanges || appliedProjectChangeIndexes.includes(index)} onClick={() => void applyProjectChanges(index, message.projectId, message.result!.projectChanges!)}>{appliedProjectChangeIndexes.includes(index) ? "已应用" : applyingProjectChanges ? "正在写入…" : "确认并应用改动"}</Button></section> : null}{message.result.trace.length ? <ToolTraceList traces={message.result.trace} /> : null}</>}
               </div></div>)}
-            {loading && <div className="message-row assistant"><div className="message-avatar assistant"><SunIcon /></div><div className="bubble assistant typing"><i /><i /><i /></div></div>}
+            {loading && <div className="message-row assistant"><div className="message-avatar assistant"><SunIcon /></div><div className={`bubble assistant typing ${assistantStatus ? "typing-status" : ""}`}>{assistantStatus || <><i /><i /><i /></>}</div></div>}
             <div ref={bottomRef} />
           </div>
           <div className={"composer-area " + (showWelcome ? "welcome-composer-area" : "")}><form className="composer" onSubmit={(event: FormEvent) => { event.preventDefault(); void submit(); }}>
             {pendingImages.length > 0 && <div className="composer-image-previews">{pendingImages.map((image) => <div className="composer-image-preview" key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" aria-label={`移除图片 ${image.name}`} title="移除图片" onClick={() => setPendingImages((items) => items.filter((item) => item.id !== image.id))}>×</button></div>)}</div>}
             {selectedProject && <div className="project-chat-context active"><FolderPlus aria-hidden="true" /><span>项目</span><span className="project-context-value">{selectedProject.name}</span><small>本轮可访问此项目</small></div>}
-            <Textarea className="composer-textarea" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="给 Little Sunshine 发送消息" rows={1} />
+            <Textarea className="composer-textarea" value={input} onChange={(event) => { setInput(event.target.value); setPromptHistoryIndex(null); }} onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); return; }
+              if (event.key === "ArrowUp" && !event.shiftKey && recentPromptHistory.length) {
+                const atInputStart = event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0;
+                if (promptHistoryIndex !== null || !input.trim() || atInputStart) {
+                  event.preventDefault();
+                  if (promptHistoryIndex === null) promptHistoryDraftRef.current = input;
+                  const nextIndex = promptHistoryIndex === null ? 0 : Math.min(promptHistoryIndex + 1, recentPromptHistory.length - 1);
+                  setPromptHistoryIndex(nextIndex); setInput(recentPromptHistory[nextIndex].content);
+                }
+                return;
+              }
+              if (event.key === "ArrowDown" && promptHistoryIndex !== null) {
+                event.preventDefault();
+                if (promptHistoryIndex === 0) { setPromptHistoryIndex(null); setInput(promptHistoryDraftRef.current); }
+                else { const nextIndex = promptHistoryIndex - 1; setPromptHistoryIndex(nextIndex); setInput(recentPromptHistory[nextIndex].content); }
+              }
+            }} placeholder="给 Little Sunshine 发送消息" rows={1} />
             <div className="composer-tools"><span className="composer-hint">↵ 发送 · Shift + Enter 换行</span><div className="composer-model-tools"><input ref={imageInputRef} className="image-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={!authenticated} onChange={(event) => { void addImageFiles(event.target.files); event.target.value = ""; }} /><Button type="button" variant="ghost" size="icon" className="attach-image-button" aria-label="上传图片" data-tooltip="上传图片（最多 4 张，每张不超过 4 MB）" disabled={!authenticated || loading || pendingImages.length >= 4} onClick={() => imageInputRef.current?.click()}><Paperclip aria-hidden="true" /></Button><Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}><PopoverTrigger asChild><Button type="button" variant="outline" className="model-select-wrap" aria-label="选择聊天模型" aria-haspopup="dialog" aria-expanded={modelMenuOpen} disabled={!authenticated}><span>◈</span><strong>{selectedModel ? selectedModel.name : "未选择模型"}</strong><ArrowDown aria-hidden="true" className="model-trigger-chevron" /></Button></PopoverTrigger>{modelMenuOpen && <PopoverContent side="top" align="start" sideOffset={8} className="model-dropdown" role="menu" aria-label="选择模型"><div className="model-dropdown-heading"><span>选择模型</span><Button type="button" variant="ghost" size="sm" className="model-dropdown-add" role="menuitem" onClick={() => { setModelMenuOpen(false); openModelModal(); }}><Plus aria-hidden="true" />添加自定义模型</Button></div><div className="model-dropdown-group"><div className="model-dropdown-group-heading">Agnes AI · 内置模型</div>{agnesBuiltinModels.map((preset) => { const model = preset.configured; return <div className={`model-dropdown-row ${model && selectedModelId === model.id ? "selected" : ""}`} key={preset.model}>{model ? <><Button type="button" variant="ghost" className="model-option-main" role="menuitemradio" aria-checked={selectedModelId === model.id} onClick={() => void chooseModel(model.id)}><span><strong>{model.name}</strong><small>{model.model} · {model.protocol.toUpperCase()}</small></span></Button><div className="model-option-actions"><Button type="button" variant="ghost" size="icon" className="model-action-button" title={`编辑 ${model.name}`} aria-label={`编辑 ${model.name}`} onClick={() => openModelModal(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></Button><Button type="button" variant="ghost" size="icon" className="model-action-button delete" title={`删除 ${model.name}`} aria-label={`删除 ${model.name}`} onClick={() => void deleteModel(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></Button></div></> : <><Button type="button" variant="ghost" className="model-option-main" role="menuitem" onClick={() => addAgnesPreset(preset)}><span><strong>{preset.name}</strong><small>{preset.model} · CHAT</small></span></Button><Button type="button" variant="outline" size="sm" onClick={() => addAgnesPreset(preset)}>配置</Button></>}</div>; })}</div>{Object.entries(modelGroups).map(([vendor, vendorModels]) => <div className="model-dropdown-group" key={vendor}><div className="model-dropdown-group-heading">{modelVendorLabel(vendor)}</div>{vendorModels.map((model) => <div className={`model-dropdown-row ${selectedModelId === model.id ? "selected" : ""}`} key={model.id}><Button type="button" variant="ghost" className="model-option-main" role="menuitemradio" aria-checked={selectedModelId === model.id} onClick={() => void chooseModel(model.id)}><span><strong>{model.name}</strong><small>{model.model} · {model.protocol.toUpperCase()}</small></span></Button><div className="model-option-actions"><Button type="button" variant="ghost" size="icon" className="model-action-button" title={`编辑 ${model.name}`} aria-label={`编辑 ${model.name}`} onClick={() => openModelModal(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg></Button><Button type="button" variant="ghost" size="icon" className="model-action-button delete" title={`删除 ${model.name}`} aria-label={`删除 ${model.name}`} onClick={() => void deleteModel(model)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></Button></div></div>)}</div>)}</PopoverContent>}</Popover><Button type="submit" variant="default" size="icon" className="composer-send-button" disabled={(!input.trim() && pendingImages.length === 0) || loading} aria-label="发送"><ArrowUp aria-hidden="true" /></Button></div></div>
           </form>{error && <div className="error-banner">{error}<button onClick={() => setError("")}>×</button></div>}</div>
         </section>
@@ -1434,17 +1688,133 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       </div>
     </section>
     <Dialog open={mcpModalOpen} onOpenChange={setMcpModalOpen}>
-      <DialogContent className="mcp-tools-modal flex max-h-[min(88vh,720px)] w-[min(100%,560px)] flex-col gap-0 overflow-hidden rounded-[13px] border border-[#e8e7ed] bg-white p-[23px] text-zinc-900 shadow-[0_22px_70px_#25212d38] sm:max-w-none" showCloseButton={false} aria-labelledby="mcp-tools-title">
-      <header><div><DialogTitle id="mcp-tools-title">外部 MCP 管理</DialogTitle><p>管理模型可调用的外部工具服务器。</p></div><DialogClose asChild><button type="button" className="model-modal-close" aria-label="关闭">×</button></DialogClose></header>
+      <DialogContent className="mcp-tools-modal flex max-h-[min(88vh,720px)] w-[min(100%,780px)] flex-col gap-0 overflow-hidden rounded-[13px] border border-[#e8e7ed] bg-white p-[23px] text-zinc-900 shadow-[0_22px_70px_#25212d38] sm:max-w-none" showCloseButton={false} aria-labelledby="mcp-tools-title">
+      <header><div><DialogTitle id="mcp-tools-title">工具管理</DialogTitle><p>配置图像生成、视频生成、网页搜索和其他可供模型调用的工具。</p></div><DialogClose asChild><button type="button" className="model-modal-close" aria-label="关闭">×</button></DialogClose></header>
       <div className="external-mcp-tab">
+        <div className="mcp-manager-layout">
+        <nav className="mcp-category-sidebar" role="tablist" aria-label="MCP 工具分类" aria-orientation="vertical">
+          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "image-generation"} className="mcp-category-button" variant={mcpManagerCategory === "image-generation" ? "secondary" : "ghost"} onClick={() => setMcpManagerCategory("image-generation")}>图像生成</Button>
+          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "video-generation"} className="mcp-category-button" variant={mcpManagerCategory === "video-generation" ? "secondary" : "ghost"} onClick={() => setMcpManagerCategory("video-generation")}>视频生成</Button>
+          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "web-search"} className="mcp-category-button" variant={mcpManagerCategory === "web-search" ? "secondary" : "ghost"} onClick={() => setMcpManagerCategory("web-search")}>网页搜索</Button>
+          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "external"} className="mcp-category-button" variant={mcpManagerCategory === "external" ? "secondary" : "ghost"} onClick={() => setMcpManagerCategory("external")}>其他工具</Button>
+        </nav>
+        <div className="mcp-category-content">
+        {mcpManagerCategory === "image-generation" && <div role="tabpanel" aria-label="图像生成">
+        <div className="mb-4"><strong className="text-sm">图像生成服务商</strong><p className="mt-1 text-xs text-muted-foreground">聊天模型通过 generate_image 工具调用当前启用的服务商。点击卡片配置 API。</p></div>
+        {imageMcpFeedback && <div role="status" className={`mb-3 rounded-md border px-3 py-2 text-xs ${imageMcpFeedback.includes("失败") || imageMcpFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{imageMcpFeedback}</div>}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {imageGenerationProviderCatalog.map((provider) => {
+            const config = imageMcpSettings.providers[provider.id];
+            const configured = Boolean(config?.hasApiKey && config.model && config.baseUrl && (provider.id !== "qwen" || parseQwenImageEndpoint(config.baseUrl)));
+            const active = configured && imageMcpSettings.enabled && imageMcpSettings.activeProvider === provider.id;
+            return <div key={provider.id} className="relative flex min-h-36 flex-col rounded-xl border border-zinc-200 bg-white p-4 transition hover:border-zinc-400 hover:shadow-sm">
+              <span className="absolute right-3 top-3 z-10 flex items-center gap-1">{configured && !active && <Button type="button" variant="ghost" size="sm" title="设为当前使用" className="h-5 rounded-full bg-[#f0eff5] px-1.5 text-[9px] font-medium text-[#625b75] shadow-none hover:bg-[#e8e5f1] hover:text-[#40366b]" disabled={imageMcpActivating !== null} onClick={() => void activateImageGenerationProvider(provider.id)}>{imageMcpActivating === provider.id ? "切换中…" : "设为当前"}</Button>}{active && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">当前使用</span>}{configured && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">已配置</span>}</span>
+              <button type="button" onClick={() => openImageGenerationEditor(provider.id)} className="flex flex-1 flex-col items-start gap-2 pr-1 text-left">
+                <strong className="pr-32 text-sm">{provider.name}</strong><span className="text-xs text-muted-foreground">{provider.description}</span>
+                <span className="mt-auto truncate text-xs text-zinc-600">{config?.model || provider.model}</span>
+                <span className="text-xs font-medium text-zinc-800">{configured ? "修改配置" : "配置服务商"} →</span>
+              </button>
+            </div>;
+          })}
+        </div>
+        </div>}
+        {mcpManagerCategory === "video-generation" && <div role="tabpanel" aria-label="视频生成">
+          <div className="mb-4"><strong className="text-sm">视频生成服务商</strong><p className="mt-1 text-xs text-muted-foreground">聊天模型通过 generate_video 工具调用阿里云百炼万相模型。当前支持文生视频。</p></div>
+          {videoMcpFeedback && <div role="status" className={`mb-3 rounded-md border px-3 py-2 text-xs ${videoMcpFeedback.includes("失败") || videoMcpFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{videoMcpFeedback}</div>}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><div className="relative flex min-h-36 flex-col rounded-xl border border-zinc-200 bg-white p-4 transition hover:border-zinc-400 hover:shadow-sm">
+            <button type="button" onClick={openVideoGenerationEditor} className="flex flex-1 flex-col items-start gap-2 pr-1 text-left">
+              {videoMcpSettings.enabled && videoMcpSettings.hasApiKey && videoMcpSettings.workspaceId && <span className="absolute right-3 top-3 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">已配置</span>}
+              <strong className="pr-24 text-sm">阿里云百炼</strong><span className="text-xs text-muted-foreground">万相视频生成 API</span>
+              <span className="mt-auto truncate text-xs text-zinc-600">{videoMcpSettings.model}</span><span className="text-xs font-medium text-zinc-800">{videoMcpSettings.hasApiKey ? "修改配置" : "配置服务商"} →</span>
+            </button>
+          </div></div>
+        </div>}
+        {mcpManagerCategory === "web-search" && <div role="tabpanel" aria-label="网页搜索">
+          <div className="mb-4"><strong className="text-sm">网页搜索服务商</strong><p className="mt-1 text-xs text-muted-foreground">聊天模型可通过当前服务商的 MCP 搜索网页。点击卡片配置；切换当前服务商不会删除其他配置。</p></div>
+          {webSearchFeedback && <div role="status" className={`mb-3 rounded-md border px-3 py-2 text-xs ${webSearchFeedback.includes("失败") || webSearchFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{webSearchFeedback}</div>}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{webSearchProviderCatalog.map((provider) => {
+            const config = webSearchSettings.providers[provider.id];
+            const configured = Boolean(config && (!provider.requiresApiKey || config.hasApiKey));
+            const active = configured && webSearchSettings.enabled && webSearchSettings.activeProvider === provider.id;
+            return <div key={provider.id} className="relative flex min-h-36 flex-col rounded-xl border border-zinc-200 bg-white p-4 transition hover:border-zinc-400 hover:shadow-sm">
+              <span className="absolute right-3 top-3 z-10 flex items-center gap-1">{configured && !active && <Button type="button" variant="ghost" size="sm" title="设为当前使用" className="h-5 rounded-full bg-[#f0eff5] px-1.5 text-[9px] font-medium text-[#625b75] shadow-none hover:bg-[#e8e5f1] hover:text-[#40366b]" disabled={webSearchActivating !== null} onClick={() => void activateWebSearchProvider(provider.id)}>{webSearchActivating === provider.id ? "切换中…" : "设为当前"}</Button>}{active && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">当前使用</span>}{configured && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">已配置</span>}</span>
+              <button type="button" onClick={() => openWebSearchEditor(provider.id)} className="flex flex-1 flex-col items-start gap-2 pr-1 text-left">
+                <strong className="pr-32 text-sm">{provider.name}</strong><span className="text-xs text-muted-foreground">{provider.description}</span>{!provider.requiresApiKey && <span className="text-[11px] text-amber-700">免 Key 可用，额度有限</span>}
+                <span className="mt-auto truncate text-xs text-zinc-600">{provider.endpoint}</span><span className="text-xs font-medium text-zinc-800">{configured ? "修改配置" : "配置服务商"} →</span>
+              </button>
+            </div>;
+          })}</div>
+        </div>}
+        {mcpManagerCategory === "external" && <div role="tabpanel" aria-label="其他工具">
         <div className="external-mcp-toolbar"><span>未标记只读的工具需要你手动授权；声明为有破坏性的工具仍不可用。</span><Button type="button" variant="outline" size="sm" onClick={openExternalMcpEditor}><Plus aria-hidden="true" />添加 MCP</Button></div>
         {externalMcpError && <div role="alert" className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{externalMcpError}</div>}
         {externalMcpServers.length ? <div className="mcp-tools-list">{externalMcpServers.map((server) => <Card className="mcp-tool-card external-mcp-card" key={server.id}>
           <div className="mcp-tool-card-heading"><div className="external-mcp-server-title"><strong>{server.name}</strong><small>{server.transport === "stdio" ? server.hasEnv ? "本地命令 · 已配置环境变量" : "本地 stdio" : server.hasToken ? "已配置认证" : "未配置认证"}</small></div><div className="external-mcp-server-actions"><Switch checked={server.enabled} aria-label={`${server.enabled ? "禁用" : "启用"}服务器 ${server.name}`} title={server.enabled ? "服务器已启用" : "服务器已禁用"} disabled={externalMcpUpdating === server.id} onCheckedChange={() => void toggleExternalMcpServer(server)} /><Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground hover:bg-red-50 hover:text-red-600" title={`删除 ${server.name}`} aria-label={`删除 ${server.name}`} onClick={() => void deleteExternalMcpServer(server)}><Trash2 aria-hidden="true" /></Button></div></div>
           <code>{server.transport === "stdio" ? [server.command, ...server.args].join(" ") : server.url}</code>{server.transport === "stdio" && server.cwd && <small>工作目录：{server.cwd}</small>}<Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => { if (externalMcpExpandedId === server.id) setExternalMcpExpandedId(""); else { setExternalMcpExpandedId(server.id); if (!externalMcpTools[server.id]) void loadExternalMcpTools(server); } }}>{externalMcpExpandedId === server.id ? "收起工具" : "查看工具"}</Button>
           {externalMcpExpandedId === server.id && <div className="external-mcp-tool-list">{externalMcpLoading === server.id ? <small>正在读取工具…</small> : (externalMcpTools[server.id] || []).length ? externalMcpTools[server.id].map((tool) => <div className="external-mcp-tool" key={tool.name}><div><strong>{tool.title || tool.name}</strong><small>{tool.destructive ? "服务器标记为有破坏性，已禁止" : tool.readOnly ? tool.description || tool.name : tool.manuallyAllowed ? `已手动授权 · ${tool.description || tool.name}` : `未标记为只读 · ${tool.description || tool.name}`}</small></div>{tool.canEnable ? <Switch checked={tool.enabled} aria-label={`${tool.enabled ? "禁用" : tool.readOnly ? "启用" : "手动授权并启用"}${tool.title || tool.name}`} title={tool.readOnly ? (tool.enabled ? "禁用工具" : "启用工具") : (tool.enabled ? "撤销授权并禁用" : "手动授权并启用")} disabled={externalMcpUpdating === server.id + ":" + tool.name} onCheckedChange={() => void toggleExternalMcpTool(server, tool)} /> : <span className="external-mcp-unsafe">不可用</span>}</div>) : <small>服务器没有提供工具。</small>}</div>}
-        </Card>)}</div> : <div className="mcp-tools-state">还没有外部 MCP 服务器，点击“添加 MCP”开始配置。</div>}
+        </Card>)}</div> : <div className="mcp-tools-state">还没有其他工具，点击“添加 MCP”开始配置。</div>}
+        </div>}
+        </div>
       </div>
+      </div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={imageMcpEditorOpen} onOpenChange={setImageMcpEditorOpen}>
+      <DialogContent className="max-h-[90vh] max-w-[500px] overflow-y-auto border-zinc-200 bg-white p-6 text-zinc-900 shadow-2xl sm:max-w-[500px]" showCloseButton={false}>
+        <div className="flex items-start justify-between gap-4">
+          <DialogHeader className="space-y-1 text-left">
+            <DialogTitle className="text-xl font-semibold tracking-tight">配置{imageGenerationProviderCatalog.find((provider) => provider.id === imageGenerationProvider)?.name}图像生成</DialogTitle>
+            <DialogDescription>保存后将启用此服务商，其他服务商的配置会保留。</DialogDescription>
+          </DialogHeader>
+          <DialogClose asChild><Button type="button" variant="ghost" size="icon" className="-mr-2 -mt-2 size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none outline-none hover:bg-transparent hover:text-zinc-900 focus-visible:border-transparent focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0" aria-label="关闭"><X className="size-4" /></Button></DialogClose>
+        </div>
+        <div className="space-y-4">
+          {imageGenerationProvider === "qwen" ? <>
+            <div className="space-y-2"><Label htmlFor="qwen-image-api-type">API 类型</Label><Input id="qwen-image-api-type" value="OpenAI 兼容图像生成 API" readOnly /></div>
+            <div className="space-y-2"><Label htmlFor="qwen-image-region">百炼地域</Label><Select value={qwenImageRegion} onValueChange={(value) => { const region = value as QwenImageRegion; setQwenImageRegion(region); setImageGenerationBaseUrl(qwenImageBaseUrl(region, qwenImageWorkspaceId)); }}><SelectTrigger id="qwen-image-region" className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="beijing">华北 2（北京）</SelectItem><SelectItem value="singapore">新加坡</SelectItem><SelectItem value="virginia">美国（弗吉尼亚）</SelectItem><SelectItem value="frankfurt">德国（法兰克福）</SelectItem><SelectItem value="tokyo">日本（东京）</SelectItem></SelectContent></Select></div>
+            <div className="space-y-2"><Label htmlFor="qwen-image-workspace">业务空间 ID（Workspace ID）</Label><Input id="qwen-image-workspace" required value={qwenImageWorkspaceId} onChange={(event) => { setQwenImageWorkspaceId(event.target.value); setImageGenerationBaseUrl(qwenImageBaseUrl(qwenImageRegion, event.target.value)); }} placeholder="填写所选地域的业务空间 ID" /></div>
+            <div className="space-y-2"><Label htmlFor="image-mcp-address">API 地址（自动生成）</Label><Input id="image-mcp-address" value={imageGenerationBaseUrl || `https://{WorkspaceId}.${qwenImageRegionHosts[qwenImageRegion]}/compatible-mode/v1`} readOnly /><small>使用所选地域的百炼专属域名和 OpenAI 兼容协议，不调用 DashScope 原生接口。</small></div>
+          </> : <div className="space-y-2"><Label htmlFor="image-mcp-address">图片 API 地址</Label><Input id="image-mcp-address" required value={imageGenerationBaseUrl} onChange={(event) => setImageGenerationBaseUrl(event.target.value)} placeholder="填写图片服务 API 地址" /><label className="full-address-toggle"><input type="checkbox" checked={imageGenerationFullAddress} onChange={(event) => setImageGenerationFullAddress(event.target.checked)} /><span className="full-address-switch" /><span>输入完整接口地址</span></label><small>{imageGenerationFullAddress ? "将直接请求填写的 URL。" : "自动追加 /images/generations。"}</small></div>}
+          <div className="space-y-2"><Label htmlFor="image-mcp-model">图片模型 ID</Label><Input id="image-mcp-model" required value={imageGenerationModel} onChange={(event) => setImageGenerationModel(event.target.value)} /></div>
+          <div className="space-y-2"><Label htmlFor="image-mcp-size">图片尺寸</Label><Input id="image-mcp-size" required value={imageGenerationSize} onChange={(event) => setImageGenerationSize(event.target.value)} /></div>
+          <div className="space-y-2"><Label htmlFor="image-mcp-key">图片 API Key</Label><Input id="image-mcp-key" type="password" autoComplete="new-password" value={imageGenerationApiKey} onChange={(event) => setImageGenerationApiKey(event.target.value)} placeholder={imageMcpHasKey ? "留空以保留已保存的 Key" : "输入图片服务 API Key"} />{imageMcpHasKey && <p className="text-xs text-muted-foreground">已保存的 Key 不会回传；留空即可保留。</p>}</div>
+          {imageMcpFeedback && <div role="status" className={`rounded-md border px-3 py-2 text-xs ${imageMcpFeedback.includes("失败") || imageMcpFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{imageMcpFeedback}</div>}
+        </div>
+        <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setImageMcpEditorOpen(false)}>取消</Button><Button type="button" disabled={imageMcpSaving || !imageGenerationBaseUrl.trim() || !imageGenerationModel.trim() || (imageGenerationProvider === "qwen" && !qwenImageWorkspaceId.trim()) || (!imageMcpHasKey && !imageGenerationApiKey.trim())} onClick={() => void saveImageGenerationMcp()}>{imageMcpSaving ? "保存中…" : "保存并使用"}</Button></div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={videoMcpEditorOpen} onOpenChange={setVideoMcpEditorOpen}>
+      <DialogContent className="max-h-[90vh] max-w-[500px] overflow-y-auto border-zinc-200 bg-white p-6 text-zinc-900 shadow-2xl sm:max-w-[500px]" showCloseButton={false}>
+        <div className="flex items-start justify-between gap-4">
+          <DialogHeader className="space-y-1 text-left"><DialogTitle className="text-xl font-semibold tracking-tight">配置阿里云百炼视频生成</DialogTitle><DialogDescription>使用万相异步视频生成 API；生成任务通常需要几分钟。</DialogDescription></DialogHeader>
+          <DialogClose asChild><Button type="button" variant="ghost" size="icon" className="-mr-2 -mt-2 size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none outline-none hover:bg-transparent hover:text-zinc-900 focus-visible:border-transparent focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0" aria-label="关闭"><X className="size-4" /></Button></DialogClose>
+        </div>
+        <div className="space-y-4">
+          <div className="space-y-2"><Label htmlFor="video-mcp-api-type">API 类型</Label><Input id="video-mcp-api-type" value="百炼地域异步视频生成 API" readOnly /></div>
+          <div className="space-y-2"><Label htmlFor="video-mcp-region">百炼地域</Label><Select value={videoMcpRegion} onValueChange={(value) => setVideoMcpRegion(value as BailianVideoRegion)}><SelectTrigger id="video-mcp-region" className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="beijing">华北 2（北京）</SelectItem><SelectItem value="singapore">新加坡</SelectItem><SelectItem value="tokyo">日本（东京）</SelectItem><SelectItem value="frankfurt">德国（法兰克福）</SelectItem><SelectItem value="virginia">美国（弗吉尼亚）</SelectItem><SelectItem value="hong-kong">中国香港</SelectItem></SelectContent></Select></div>
+          <div className="space-y-2"><Label htmlFor="video-mcp-workspace">业务空间 ID（Workspace ID）</Label><Input id="video-mcp-workspace" required value={videoMcpWorkspaceId} onChange={(event) => setVideoMcpWorkspaceId(event.target.value)} placeholder="填写所选地域的业务空间 ID" /></div>
+          <div className="space-y-2"><Label htmlFor="video-mcp-address">API 地址（自动生成）</Label><Input id="video-mcp-address" value={bailianVideoBaseUrl(videoMcpRegion, videoMcpWorkspaceId) || `https://{WorkspaceId}.${bailianVideoRegionHosts[videoMcpRegion]}`} readOnly /></div>
+          <div className="space-y-2"><Label htmlFor="video-mcp-model">视频模型</Label><Select value={videoMcpModel} onValueChange={(value) => setVideoMcpModel(value as "wan3.0-video" | "wan3.0-video-prime")}><SelectTrigger id="video-mcp-model" className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="wan3.0-video">wan3.0-video（标准版）</SelectItem><SelectItem value="wan3.0-video-prime">wan3.0-video-prime（高速版）</SelectItem></SelectContent></Select></div>
+          <div className="grid grid-cols-2 gap-3"><div className="space-y-2"><Label htmlFor="video-mcp-resolution">分辨率</Label><Select value={videoMcpResolution} onValueChange={(value) => setVideoMcpResolution(value as "480P" | "720P" | "1080P")}><SelectTrigger id="video-mcp-resolution" className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="480P">480P</SelectItem><SelectItem value="720P">720P</SelectItem><SelectItem value="1080P">1080P</SelectItem></SelectContent></Select></div><div className="space-y-2"><Label htmlFor="video-mcp-duration">默认时长（秒）</Label><Input id="video-mcp-duration" type="number" min={2} max={30} step={1} value={videoMcpDuration} onChange={(event) => setVideoMcpDuration(event.target.value)} /></div></div>
+          <div className="space-y-2"><Label htmlFor="video-mcp-key">百炼 API Key</Label><Input id="video-mcp-key" type="password" autoComplete="new-password" value={videoMcpApiKey} onChange={(event) => setVideoMcpApiKey(event.target.value)} placeholder={videoMcpHasKey ? "留空以保留已保存的 Key" : "输入所选地域的百炼 API Key"} />{videoMcpHasKey && <p className="text-xs text-muted-foreground">已保存的 Key 不会回传；留空即可保留。</p>}</div>
+          {videoMcpFeedback && <div role="status" className={`rounded-md border px-3 py-2 text-xs ${videoMcpFeedback.includes("失败") || videoMcpFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{videoMcpFeedback}</div>}
+        </div>
+        <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setVideoMcpEditorOpen(false)}>取消</Button><Button type="button" disabled={videoMcpSaving || !videoMcpWorkspaceId.trim() || (!videoMcpHasKey && !videoMcpApiKey.trim()) || !Number.isInteger(Number(videoMcpDuration)) || Number(videoMcpDuration) < 2 || Number(videoMcpDuration) > 30} onClick={() => void saveVideoGenerationMcp()}>{videoMcpSaving ? "保存中…" : "保存并启用"}</Button></div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={webSearchEditorOpen} onOpenChange={setWebSearchEditorOpen}>
+      <DialogContent className="max-h-[90vh] max-w-[500px] overflow-y-auto border-zinc-200 bg-white p-6 text-zinc-900 shadow-2xl sm:max-w-[500px]" showCloseButton={false}>
+        <div className="flex items-start justify-between gap-4">
+          <DialogHeader className="space-y-1 text-left"><DialogTitle className="text-xl font-semibold tracking-tight">配置{webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.name}网页搜索</DialogTitle><DialogDescription>使用服务商官方托管的 Streamable HTTP MCP 搜索服务。</DialogDescription></DialogHeader>
+          <DialogClose asChild><Button type="button" variant="ghost" size="icon" className="-mr-2 -mt-2 size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none outline-none hover:bg-transparent hover:text-zinc-900 focus-visible:border-transparent focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0" aria-label="关闭"><X className="size-4" /></Button></DialogClose>
+        </div>
+        <div className="space-y-4">
+          <div className="space-y-2"><Label htmlFor="web-search-api-type">API 类型</Label><Input id="web-search-api-type" value="Streamable HTTP MCP" readOnly /></div>
+          <div className="space-y-2"><Label htmlFor="web-search-endpoint">MCP 地址（官方地址）</Label><Input id="web-search-endpoint" value={webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.endpoint || ""} readOnly /></div>
+          <div className="space-y-2"><Label htmlFor="web-search-key">{webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.requiresApiKey ? `${webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.name} API Key` : "API Key（可选）"}</Label><Input id="web-search-key" type="password" autoComplete="new-password" value={webSearchApiKey} onChange={(event) => setWebSearchApiKey(event.target.value)} placeholder={webSearchHasKey ? "留空以保留已保存的 Key" : webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.requiresApiKey ? `输入 ${webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.name} API Key` : "可留空使用服务商匿名额度"} />{webSearchHasKey && <p className="text-xs text-muted-foreground">已保存的 Key 不会回传；留空即可保留。</p>}{webSearchProvider === "firecrawl" && !webSearchHasKey && <p className="text-xs text-amber-700">当前 Firecrawl 服务拒绝了免 Key 搜索请求，请填写 API Key 后使用。</p>}{webSearchProvider !== "tavily" && webSearchProvider !== "firecrawl" && <p className="text-xs text-muted-foreground">免 Key 使用有额度限制；填写 API Key 后通过 Bearer Token 认证。</p>}</div>
+          {webSearchFeedback && <div role="status" className={`rounded-md border px-3 py-2 text-xs ${webSearchFeedback.includes("失败") || webSearchFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{webSearchFeedback}</div>}
+        </div>
+        <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setWebSearchEditorOpen(false)}>取消</Button><Button type="button" disabled={webSearchSaving || (Boolean(webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.requiresApiKey) && !webSearchHasKey && !webSearchApiKey.trim())} onClick={() => void saveWebSearchMcp()}>{webSearchSaving ? "保存中…" : "保存并使用"}</Button></div>
       </DialogContent>
     </Dialog>
     <Dialog open={externalMcpEditorOpen} onOpenChange={setExternalMcpEditorOpen}>

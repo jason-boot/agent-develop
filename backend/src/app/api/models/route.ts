@@ -12,7 +12,7 @@ export const GET = authenticated(handlerGET);
 
 async function handlerPOST(request: Request) {
   try {
-    const body = await request.json() as { action?: string; id?: string; model?: string; models?: Array<{ name: string; model: string }>; name?: string; vendor?: string; protocol?: "chat" | "messages" | "responses"; modelsUrl?: string; baseUrl?: string; fullAddress?: boolean; apiKey?: string; credentialSourceModelId?: string };
+    const body = await request.json() as { action?: string; id?: string; model?: string; models?: Array<{ name: string; model: string }>; name?: string; vendor?: string; protocol?: "chat" | "messages" | "responses"; modelsUrl?: string; baseUrl?: string; fullAddress?: boolean; apiKey?: string; imageGeneration?: { provider: "openai-images" | "qwen-dashscope"; baseUrl: string; fullAddress: boolean; model: string; apiKey?: string; size: string } | null; credentialSourceModelId?: string };
     if (body.action === "default") return NextResponse.json(await setDefaultModel(body.id || null));
     if (body.action === "latest-provider") {
       const config = await findLatestProviderConfig(body.vendor || "");
@@ -24,7 +24,7 @@ async function handlerPOST(request: Request) {
       return NextResponse.json({ models });
     }
     if (body.action === "batch") {
-      return NextResponse.json(await saveModelsBatch({ protocol: body.protocol || "chat", baseUrl: body.baseUrl || "", fullAddress: body.fullAddress, apiKey: body.apiKey || "", name: body.name || "", vendor: body.vendor, modelsUrl: body.modelsUrl, credentialSourceModelId: body.credentialSourceModelId, models: body.models || [] }));
+      return NextResponse.json(await saveModelsBatch({ protocol: body.protocol || "chat", baseUrl: body.baseUrl || "", fullAddress: body.fullAddress, apiKey: body.apiKey || "", name: body.name || "", vendor: body.vendor, modelsUrl: body.modelsUrl, imageGeneration: body.imageGeneration, credentialSourceModelId: body.credentialSourceModelId, models: body.models || [] }));
     }
     if (body.action === "delete") {
       if (!body.id) return NextResponse.json({ error: "缺少模型 ID。" }, { status: 400 });

@@ -7,6 +7,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 export type StoredMessage = { role: "assistant" | "user"; content: string; error?: boolean; result?: unknown };
 export type StoredConversation = { id: string; title: string; updatedAt: number; pinned: boolean; projectId?: string; projectName?: string; messages: StoredMessage[] };
+export type StoredVideoGenerationTask = { id: string; userId: number; conversationId: string; providerTaskId: string; endpoint: string; apiKey: string; model: string; resolution: string; duration: number; status: string; videoUrl: string | null; error: string | null; createdAt: number; updatedAt: number; nextPollAt: number; pollLeaseUntil: number | null; pollAttempts: number };
 
 const userContext = new AsyncLocalStorage<number>();
 export function withUserContext<T>(userId: number, callback: () => T): T { return userContext.run(userId, callback); }
@@ -51,6 +52,8 @@ function ensureModelConfigColumns(database: DatabaseSync) {
   const columns = database.prepare("PRAGMA table_info(model_configs)").all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === "vendor")) database.exec("ALTER TABLE model_configs ADD COLUMN vendor TEXT NOT NULL DEFAULT 'custom'");
   if (!columns.some((column) => column.name === "models_url")) database.exec("ALTER TABLE model_configs ADD COLUMN models_url TEXT NOT NULL DEFAULT ''");
+  if (!columns.some((column) => column.name === "image_generation_model")) database.exec("ALTER TABLE model_configs ADD COLUMN image_generation_model TEXT NOT NULL DEFAULT ''");
+  if (!columns.some((column) => column.name === "image_generation_config")) database.exec("ALTER TABLE model_configs ADD COLUMN image_generation_config TEXT NOT NULL DEFAULT '{}' ");
 }
 
 function ensureUserIdColumn(database: DatabaseSync, table: "conversations" | "model_configs" | "external_mcp_servers") {
@@ -120,6 +123,14 @@ function getDatabase() {
         provider_display_name TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
         UNIQUE (provider, provider_user_id), UNIQUE (user_id, provider)
       );
+      CREATE TABLE IF NOT EXISTS video_generation_tasks (
+        id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, conversation_id TEXT NOT NULL, provider_task_id TEXT NOT NULL,
+        endpoint TEXT NOT NULL, api_key TEXT NOT NULL, model TEXT NOT NULL, resolution TEXT NOT NULL, duration INTEGER NOT NULL,
+        status TEXT NOT NULL, video_url TEXT, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        next_poll_at INTEGER NOT NULL, poll_lease_until INTEGER, poll_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS video_generation_tasks_due ON video_generation_tasks(status, next_poll_at, poll_lease_until);
+      CREATE INDEX IF NOT EXISTS video_generation_tasks_conversation ON video_generation_tasks(user_id, conversation_id, created_at);
     `);
     return global.dqConversationDb;
   }
@@ -149,6 +160,14 @@ function getDatabase() {
         result_json TEXT,
         UNIQUE (conversation_id, message_index)
       );
+      CREATE TABLE IF NOT EXISTS video_generation_tasks (
+        id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, conversation_id TEXT NOT NULL, provider_task_id TEXT NOT NULL,
+        endpoint TEXT NOT NULL, api_key TEXT NOT NULL, model TEXT NOT NULL, resolution TEXT NOT NULL, duration INTEGER NOT NULL,
+        status TEXT NOT NULL, video_url TEXT, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        next_poll_at INTEGER NOT NULL, poll_lease_until INTEGER, poll_attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS video_generation_tasks_due ON video_generation_tasks(status, next_poll_at, poll_lease_until);
+      CREATE INDEX IF NOT EXISTS video_generation_tasks_conversation ON video_generation_tasks(user_id, conversation_id, created_at);
       CREATE TABLE IF NOT EXISTS model_configs (
         id TEXT PRIMARY KEY,
         user_id INTEGER NOT NULL,
@@ -160,6 +179,8 @@ function getDatabase() {
         api_key TEXT NOT NULL,
         vendor TEXT NOT NULL DEFAULT 'custom',
         models_url TEXT NOT NULL DEFAULT '',
+        image_generation_model TEXT NOT NULL DEFAULT '',
+        image_generation_config TEXT NOT NULL DEFAULT '{}',
         sort_order INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS app_settings (
@@ -243,7 +264,8 @@ async function getMysqlPool() {
     const statements = [
       `CREATE TABLE IF NOT EXISTS conversations (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, title TEXT NOT NULL, updated_at BIGINT NOT NULL, project_id VARCHAR(128) NULL, project_name TEXT NULL, pinned TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS conversation_messages (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, conversation_id VARCHAR(128) NOT NULL, message_index INT NOT NULL, role VARCHAR(32) NOT NULL, content LONGTEXT NOT NULL, is_error TINYINT NOT NULL DEFAULT 0, result_json LONGTEXT NULL, UNIQUE KEY conversation_message_order (conversation_id, message_index), CONSTRAINT conversation_messages_fk FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-      `CREATE TABLE IF NOT EXISTS model_configs (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(255) NOT NULL, protocol VARCHAR(32) NOT NULL, base_url TEXT NOT NULL, full_address TINYINT NOT NULL, model TEXT NOT NULL, api_key TEXT NOT NULL, vendor VARCHAR(128) NOT NULL DEFAULT 'custom', models_url TEXT NOT NULL, sort_order INT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS video_generation_tasks (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, conversation_id VARCHAR(128) NOT NULL, provider_task_id VARCHAR(128) NOT NULL, endpoint TEXT NOT NULL, api_key TEXT NOT NULL, model VARCHAR(128) NOT NULL, resolution VARCHAR(16) NOT NULL, duration INT NOT NULL, status VARCHAR(24) NOT NULL, video_url TEXT NULL, error TEXT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, next_poll_at BIGINT NOT NULL, poll_lease_until BIGINT NULL, poll_attempts INT NOT NULL DEFAULT 0, KEY video_generation_tasks_due (status, next_poll_at, poll_lease_until), KEY video_generation_tasks_conversation (user_id, conversation_id, created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS model_configs (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(255) NOT NULL, protocol VARCHAR(32) NOT NULL, base_url TEXT NOT NULL, full_address TINYINT NOT NULL, model TEXT NOT NULL, api_key TEXT NOT NULL, vendor VARCHAR(128) NOT NULL DEFAULT 'custom', models_url TEXT NOT NULL, image_generation_model VARCHAR(255) NOT NULL DEFAULT '', image_generation_config JSON NULL, sort_order INT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS app_settings (user_id BIGINT NOT NULL, setting_key VARCHAR(128) NOT NULL, setting_value TEXT NULL, PRIMARY KEY (user_id, setting_key)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS external_mcp_servers (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(255) NOT NULL, transport_type VARCHAR(16) NOT NULL DEFAULT 'http', url TEXT NOT NULL, token TEXT NOT NULL, command TEXT NULL, args_json LONGTEXT NULL, env_json LONGTEXT NULL, cwd TEXT NULL, enabled TINYINT NOT NULL, disabled_tools_json LONGTEXT NOT NULL, allowed_tools_json LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS app_metadata (metadata_key VARCHAR(128) PRIMARY KEY, metadata_value TEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -251,6 +273,10 @@ async function getMysqlPool() {
       `CREATE TABLE IF NOT EXISTS user_identities (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, user_id BIGINT NOT NULL, provider VARCHAR(32) NOT NULL, provider_user_id VARCHAR(128) NOT NULL, provider_username VARCHAR(191) NOT NULL DEFAULT '', provider_display_name VARCHAR(191) NOT NULL DEFAULT '', avatar_url TEXT NOT NULL, created_at BIGINT NOT NULL, UNIQUE KEY identity_provider_user (provider, provider_user_id), UNIQUE KEY identity_user_provider (user_id, provider), CONSTRAINT user_identities_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     ];
     for (const statement of statements) await pool.query(statement);
+    const [modelColumns] = await pool.query("SHOW COLUMNS FROM model_configs");
+    const modelColumnNames = new Set((modelColumns as Array<{ Field: string }>).map((column) => column.Field));
+    if (!modelColumnNames.has("image_generation_model")) await pool.query("ALTER TABLE model_configs ADD COLUMN image_generation_model VARCHAR(255) NOT NULL DEFAULT ''");
+    if (!modelColumnNames.has("image_generation_config")) await pool.query("ALTER TABLE model_configs ADD COLUMN image_generation_config JSON NULL");
     const [columns] = await pool.query("SHOW COLUMNS FROM external_mcp_servers");
     const columnNames = new Set((columns as Array<{ Field: string }>).map((column) => column.Field));
     const additions = [
@@ -520,18 +546,18 @@ export async function migrateLegacyConfigs() {
 export async function readModelConfigStore() {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [rows] = await pool.execute("SELECT id, name, protocol, base_url AS baseUrl, full_address AS fullAddress, model, api_key AS apiKey, vendor, models_url AS modelsUrl FROM model_configs WHERE user_id = ? ORDER BY sort_order, id", [currentUserId()]);
+    const [rows] = await pool.execute("SELECT id, name, protocol, base_url AS baseUrl, full_address AS fullAddress, model, api_key AS apiKey, vendor, models_url AS modelsUrl, image_generation_model AS imageGenerationModel, image_generation_config AS imageGenerationConfig FROM model_configs WHERE user_id = ? ORDER BY sort_order, id", [currentUserId()]);
     const [defaultRows] = await pool.execute("SELECT setting_value FROM app_settings WHERE user_id = ? AND setting_key = 'default_model_id'", [currentUserId()]);
     const defaultRow = (defaultRows as Array<{ setting_value: string | null }>)[0];
-    return { models: (rows as Array<{ id: string; name: string; protocol: "chat" | "messages" | "responses"; baseUrl: string; fullAddress: number; model: string; apiKey: string; vendor: string; modelsUrl: string }>).map((row) => ({ ...row, fullAddress: Boolean(row.fullAddress) })), defaultModelId: defaultRow?.setting_value || null };
+    return { models: (rows as Array<{ id: string; name: string; protocol: "chat" | "messages" | "responses"; baseUrl: string; fullAddress: number; model: string; apiKey: string; vendor: string; modelsUrl: string; imageGenerationModel: string; imageGenerationConfig: string | Record<string, unknown> | null }>).map((row) => ({ ...row, fullAddress: Boolean(row.fullAddress), imageGeneration: typeof row.imageGenerationConfig === "string" ? JSON.parse(row.imageGenerationConfig) : row.imageGenerationConfig })), defaultModelId: defaultRow?.setting_value || null };
   }
   const database = getDatabase();
-  const rows = database.prepare("SELECT id, name, protocol, base_url AS baseUrl, full_address AS fullAddress, model, api_key AS apiKey, vendor, models_url AS modelsUrl FROM model_configs WHERE user_id = ? ORDER BY sort_order, rowid").all(currentUserId()) as Array<{ id: string; name: string; protocol: "chat" | "messages" | "responses"; baseUrl: string; fullAddress: number; model: string; apiKey: string; vendor: string; modelsUrl: string }>;
+  const rows = database.prepare("SELECT id, name, protocol, base_url AS baseUrl, full_address AS fullAddress, model, api_key AS apiKey, vendor, models_url AS modelsUrl, image_generation_model AS imageGenerationModel, image_generation_config AS imageGenerationConfig FROM model_configs WHERE user_id = ? ORDER BY sort_order, rowid").all(currentUserId()) as Array<{ id: string; name: string; protocol: "chat" | "messages" | "responses"; baseUrl: string; fullAddress: number; model: string; apiKey: string; vendor: string; modelsUrl: string; imageGenerationModel: string; imageGenerationConfig: string }>;
   const defaultRow = database.prepare("SELECT setting_value FROM app_settings WHERE user_id = ? AND setting_key = 'default_model_id'").get(currentUserId()) as { setting_value: string | null } | undefined;
-  return { models: rows.map((row) => ({ ...row, fullAddress: Boolean(row.fullAddress) })), defaultModelId: defaultRow?.setting_value || null };
+  return { models: rows.map((row) => ({ ...row, fullAddress: Boolean(row.fullAddress), imageGeneration: JSON.parse(row.imageGenerationConfig || "{}") })), defaultModelId: defaultRow?.setting_value || null };
 }
 
-export async function writeModelConfigStore(store: { models: Array<{ id: string; name: string; protocol: string; baseUrl: string; fullAddress: boolean; model: string; apiKey: string; vendor?: string; modelsUrl?: string }>; defaultModelId: string | null }) {
+export async function writeModelConfigStore(store: { models: Array<{ id: string; name: string; protocol: string; baseUrl: string; fullAddress: boolean; model: string; apiKey: string; vendor?: string; modelsUrl?: string; imageGenerationModel?: string; imageGeneration?: unknown }>; defaultModelId: string | null }) {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
     const connection = await pool.getConnection();
@@ -539,7 +565,7 @@ export async function writeModelConfigStore(store: { models: Array<{ id: string;
       await connection.beginTransaction();
       await connection.execute("DELETE FROM model_configs WHERE user_id = ?", [currentUserId()]);
       for (const [index, model] of store.models.entries()) {
-        await connection.execute("INSERT INTO model_configs (id, user_id, name, protocol, base_url, full_address, model, api_key, vendor, models_url, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [model.id, currentUserId(), model.name, model.protocol, model.baseUrl, model.fullAddress ? 1 : 0, model.model, model.apiKey, model.vendor || "custom", model.modelsUrl || "", index]);
+        await connection.execute("INSERT INTO model_configs (id, user_id, name, protocol, base_url, full_address, model, api_key, vendor, models_url, image_generation_model, image_generation_config, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [model.id, currentUserId(), model.name, model.protocol, model.baseUrl, model.fullAddress ? 1 : 0, model.model, model.apiKey, model.vendor || "custom", model.modelsUrl || "", model.imageGenerationModel || "", model.imageGeneration ? JSON.stringify(model.imageGeneration) : null, index]);
       }
       await connection.execute("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [currentUserId(), store.defaultModelId]);
       await connection.commit();
@@ -551,8 +577,8 @@ export async function writeModelConfigStore(store: { models: Array<{ id: string;
   database.exec("BEGIN IMMEDIATE");
   try {
     database.prepare("DELETE FROM model_configs WHERE user_id = ?").run(currentUserId());
-    const insert = database.prepare("INSERT INTO model_configs (id, user_id, name, protocol, base_url, full_address, model, api_key, vendor, models_url, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    store.models.forEach((model, index) => insert.run(model.id, currentUserId(), model.name, model.protocol, model.baseUrl, model.fullAddress ? 1 : 0, model.model, model.apiKey, model.vendor || "custom", model.modelsUrl || "", index));
+    const insert = database.prepare("INSERT INTO model_configs (id, user_id, name, protocol, base_url, full_address, model, api_key, vendor, models_url, image_generation_model, image_generation_config, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    store.models.forEach((model, index) => insert.run(model.id, currentUserId(), model.name, model.protocol, model.baseUrl, model.fullAddress ? 1 : 0, model.model, model.apiKey, model.vendor || "custom", model.modelsUrl || "", model.imageGenerationModel || "", model.imageGeneration ? JSON.stringify(model.imageGeneration) : "{}", index));
     database.prepare("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, 'default_model_id', ?) ON CONFLICT(user_id, setting_key) DO UPDATE SET setting_value = excluded.setting_value").run(currentUserId(), store.defaultModelId);
     database.exec("COMMIT");
   } catch (error) { database.exec("ROLLBACK"); throw error; }
@@ -696,4 +722,89 @@ export async function setConversationPinned(id: string, pinned: boolean) {
     return (result as { affectedRows: number }).affectedRows > 0;
   }
   return getDatabase().prepare("UPDATE conversations SET pinned = ? WHERE id = ? AND user_id = ?").run(pinned ? 1 : 0, id, currentUserId()).changes > 0;
+}
+
+export async function readUserAppSetting(key: string) {
+  if (await getProvider() === "mysql") {
+    const [rows] = await (await getMysqlPool()).execute("SELECT setting_value FROM app_settings WHERE user_id = ? AND setting_key = ?", [currentUserId(), key]);
+    return (rows as Array<{ setting_value: string | null }>)[0]?.setting_value || null;
+  }
+  const row = getDatabase().prepare("SELECT setting_value FROM app_settings WHERE user_id = ? AND setting_key = ?").get(currentUserId(), key) as { setting_value: string | null } | undefined;
+  return row?.setting_value || null;
+}
+
+export async function writeUserAppSetting(key: string, value: string | null) {
+  if (await getProvider() === "mysql") {
+    await (await getMysqlPool()).execute("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", [currentUserId(), key, value]);
+    return;
+  }
+  getDatabase().prepare("INSERT INTO app_settings (user_id, setting_key, setting_value) VALUES (?, ?, ?) ON CONFLICT(user_id, setting_key) DO UPDATE SET setting_value = excluded.setting_value").run(currentUserId(), key, value);
+}
+
+const videoTaskSelect = "SELECT id, user_id AS userId, conversation_id AS conversationId, provider_task_id AS providerTaskId, endpoint, api_key AS apiKey, model, resolution, duration, status, video_url AS videoUrl, error, created_at AS createdAt, updated_at AS updatedAt, next_poll_at AS nextPollAt, poll_lease_until AS pollLeaseUntil, poll_attempts AS pollAttempts FROM video_generation_tasks";
+function mapVideoTask(row: Record<string, unknown>): StoredVideoGenerationTask {
+  return {
+    id: String(row.id), userId: Number(row.userId), conversationId: String(row.conversationId), providerTaskId: String(row.providerTaskId),
+    endpoint: String(row.endpoint), apiKey: String(row.apiKey), model: String(row.model), resolution: String(row.resolution), duration: Number(row.duration),
+    status: String(row.status), videoUrl: typeof row.videoUrl === "string" ? row.videoUrl : null, error: typeof row.error === "string" ? row.error : null,
+    createdAt: Number(row.createdAt), updatedAt: Number(row.updatedAt), nextPollAt: Number(row.nextPollAt),
+    pollLeaseUntil: row.pollLeaseUntil === null || row.pollLeaseUntil === undefined ? null : Number(row.pollLeaseUntil), pollAttempts: Number(row.pollAttempts),
+  };
+}
+
+export async function saveVideoGenerationTask(input: Omit<StoredVideoGenerationTask, "userId" | "createdAt" | "updatedAt" | "pollLeaseUntil" | "pollAttempts">) {
+  const userId = currentUserId();
+  const now = Date.now();
+  const values = [input.id, userId, input.conversationId, input.providerTaskId, input.endpoint, input.apiKey, input.model, input.resolution, input.duration, input.status, input.videoUrl, input.error, now, now, input.nextPollAt];
+  const sql = "INSERT INTO video_generation_tasks (id, user_id, conversation_id, provider_task_id, endpoint, api_key, model, resolution, duration, status, video_url, error, created_at, updated_at, next_poll_at, poll_lease_until, poll_attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)";
+  if (await getProvider() === "mysql") await (await getMysqlPool()).execute(sql, values);
+  else getDatabase().prepare(sql).run(...values);
+}
+
+export async function getVideoGenerationTasksForConversation(conversationId: string) {
+  const userId = currentUserId();
+  const sql = `${videoTaskSelect} WHERE user_id = ? AND conversation_id = ? ORDER BY created_at`;
+  if (await getProvider() === "mysql") {
+    const [rows] = await (await getMysqlPool()).execute(sql, [userId, conversationId]);
+    return (rows as Array<Record<string, unknown>>).map(mapVideoTask);
+  }
+  return (getDatabase().prepare(sql).all(userId, conversationId) as Array<Record<string, unknown>>).map(mapVideoTask);
+}
+
+export async function claimDueVideoGenerationTasks(now: number, leaseUntil: number, limit = 16) {
+  if (await getProvider() === "mysql") {
+    const pool = await getMysqlPool();
+    const [candidates] = await pool.execute(`${videoTaskSelect} WHERE status IN ('PENDING', 'RUNNING') AND next_poll_at <= ? AND (poll_lease_until IS NULL OR poll_lease_until < ?) ORDER BY next_poll_at LIMIT ?`, [now, now, limit]);
+    const tasks: StoredVideoGenerationTask[] = [];
+    for (const candidate of candidates as Array<Record<string, unknown>>) {
+      const id = String(candidate.id);
+      const [claimResult] = await pool.execute("UPDATE video_generation_tasks SET poll_lease_until = ? WHERE id = ? AND status IN ('PENDING', 'RUNNING') AND (poll_lease_until IS NULL OR poll_lease_until < ?)", [leaseUntil, id, now]);
+      if (Number((claimResult as { affectedRows: number }).affectedRows) !== 1) continue;
+      const [claimed] = await pool.execute(`${videoTaskSelect} WHERE id = ?`, [id]);
+      const row = (claimed as Array<Record<string, unknown>>)[0];
+      if (row) tasks.push(mapVideoTask(row));
+    }
+    return tasks;
+  }
+  const database = getDatabase();
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const rows = database.prepare(`${videoTaskSelect} WHERE status IN ('PENDING', 'RUNNING') AND next_poll_at <= ? AND (poll_lease_until IS NULL OR poll_lease_until < ?) ORDER BY next_poll_at LIMIT ?`).all(now, now, limit) as Array<Record<string, unknown>>;
+    const tasks = rows.map(mapVideoTask);
+    const update = database.prepare("UPDATE video_generation_tasks SET poll_lease_until = ? WHERE id = ?");
+    for (const task of tasks) update.run(leaseUntil, task.id);
+    database.exec("COMMIT");
+    return tasks;
+  } catch (error) { database.exec("ROLLBACK"); throw error; }
+}
+
+export async function updateVideoGenerationTask(input: { id: string; status: string; videoUrl?: string | null; error?: string | null; nextPollAt?: number; incrementPollAttempts?: boolean; clearApiKey?: boolean }) {
+  const updatedAt = Date.now();
+  const fields = "status = ?, video_url = ?, error = ?, updated_at = ?, next_poll_at = ?, poll_lease_until = NULL";
+  const values: Array<string | number | null> = [input.status, input.videoUrl ?? null, input.error ?? null, updatedAt, input.nextPollAt ?? updatedAt + 120_000];
+  const apiKeyField = input.clearApiKey ? ", api_key = ''" : "";
+  values.push(input.id);
+  const sql = `UPDATE video_generation_tasks SET ${fields}${apiKeyField}${input.incrementPollAttempts ? ", poll_attempts = poll_attempts + 1" : ""} WHERE id = ?`;
+  if (await getProvider() === "mysql") await (await getMysqlPool()).execute(sql, values);
+  else getDatabase().prepare(sql).run(...values);
 }

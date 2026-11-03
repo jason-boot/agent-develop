@@ -12,10 +12,23 @@ export type ModelConfig = {
   baseUrl: string;
   fullAddress: boolean;
   model: string;
+  imageGeneration?: ImageGenerationConfig;
+  imageGenerationModel?: string;
   apiKey: string;
   vendor: string;
   modelsUrl: string;
 };
+
+export type ImageGenerationConfig = {
+  provider: "openai-images" | "qwen-dashscope";
+  baseUrl: string;
+  fullAddress: boolean;
+  model: string;
+  apiKey: string;
+  size: string;
+};
+
+type PublicImageGenerationConfig = Omit<ImageGenerationConfig, "apiKey"> & { hasApiKey: boolean };
 
 export class ModelServiceError extends Error {}
 
@@ -35,7 +48,14 @@ type ModelStore = { models: ModelConfig[]; defaultModelId: string | null };
 async function readStore(): Promise<ModelStore> {
   await migrateLegacyConfigs();
   const store = await readModelConfigStore();
-  return { models: store.models as ModelConfig[], defaultModelId: store.defaultModelId };
+  const models = (store.models as ModelConfig[]).map((model) => {
+    if (model.imageGeneration && (model.imageGeneration.provider !== "openai-images" && model.imageGeneration.provider !== "qwen-dashscope" || !model.imageGeneration.model || !model.imageGeneration.apiKey)) model.imageGeneration = undefined;
+    if (!model.imageGeneration && model.imageGenerationModel) {
+      model.imageGeneration = { provider: "openai-images", baseUrl: model.baseUrl, fullAddress: false, model: model.imageGenerationModel, apiKey: model.apiKey, size: "1024x1024" };
+    }
+    return model;
+  });
+  return { models, defaultModelId: store.defaultModelId };
 }
 
 async function writeStore(store: ModelStore) {
@@ -50,7 +70,7 @@ export async function getModelStore() {
 export async function listPublicModels() {
   const store = await readStore();
   return {
-    models: store.models.map(({ apiKey, ...model }) => ({ ...model, hasApiKey: Boolean(apiKey) })),
+    models: store.models.map(({ apiKey, imageGeneration, ...model }) => ({ ...model, hasApiKey: Boolean(apiKey), ...(imageGeneration ? { imageGeneration: (({ apiKey: _imageApiKey, ...safeConfig }) => ({ ...safeConfig, hasApiKey: Boolean(_imageApiKey) }))(imageGeneration) } : {}) })),
     defaultModelId: store.defaultModelId,
   };
 }
@@ -80,12 +100,16 @@ export async function findLatestProviderConfig(vendor: string) {
   return { id: model.id, vendor: model.vendor, protocol: model.protocol, baseUrl: model.baseUrl, fullAddress: model.fullAddress, modelsUrl: model.modelsUrl, hasApiKey: Boolean(model.apiKey) };
 }
 
-export async function saveModel(input: Partial<ModelConfig>) {
+type ImageGenerationInput = Omit<ImageGenerationConfig, "apiKey"> & { apiKey?: string };
+type ModelConfigInput = Omit<Partial<ModelConfig>, "imageGeneration"> & { imageGeneration?: ImageGenerationInput | null };
+
+export async function saveModel(input: ModelConfigInput) {
   const store = await readStore();
   const existing = input.id ? store.models.find((model) => model.id === input.id) : undefined;
   const name = typeof input.name === "string" ? input.name.trim() : "";
   const protocol = input.protocol || existing?.protocol || "chat";
   const model = typeof input.model === "string" ? input.model.trim() : "";
+  let imageGeneration: ImageGenerationConfig | undefined = input.imageGeneration === undefined ? existing?.imageGeneration : undefined;
   const fullAddress = typeof input.fullAddress === "boolean" ? input.fullAddress : existing?.fullAddress || false;
   const rawBaseUrl = typeof input.baseUrl === "string" ? input.baseUrl.trim() : "";
   const baseUrl = fullAddress ? rawBaseUrl : rawBaseUrl.replace(/\/+$/, "");
@@ -97,7 +121,19 @@ export async function saveModel(input: Partial<ModelConfig>) {
   if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") throw new Error("API 地址必须使用 HTTP 或 HTTPS。");
   const vendor = typeof input.vendor === "string" ? input.vendor : existing?.vendor || "custom";
   const modelsUrl = typeof input.modelsUrl === "string" ? input.modelsUrl.trim() : existing?.modelsUrl || "";
-  const next: ModelConfig = { id: existing?.id || randomUUID(), name, protocol, baseUrl, fullAddress, model, apiKey, vendor, modelsUrl };
+  const imageInput = input.imageGeneration;
+  if (imageInput) {
+    const imageBaseUrl = typeof imageInput.baseUrl === "string" ? imageInput.baseUrl.trim() : "";
+    const imageModel = typeof imageInput.model === "string" ? imageInput.model.trim() : "";
+    const imageApiKey = typeof imageInput.apiKey === "string" && imageInput.apiKey.trim() ? imageInput.apiKey.trim() : existing?.imageGeneration?.apiKey || "";
+    if (imageInput.provider !== "openai-images" && imageInput.provider !== "qwen-dashscope") throw new Error("请选择支持的图片生成接口。");
+    if (!imageBaseUrl || !imageModel || !imageApiKey) throw new Error("请填写图片生成 API 地址、模型 ID 和 API Key。");
+    let imageUrl: URL;
+    try { imageUrl = new URL(imageBaseUrl); } catch { throw new Error("图片生成 API 地址格式不正确。"); }
+    if (imageUrl.protocol !== "https:" && imageUrl.protocol !== "http:") throw new Error("图片生成 API 地址必须使用 HTTP 或 HTTPS。");
+    imageGeneration = { provider: imageInput.provider, baseUrl: imageBaseUrl, fullAddress: Boolean(imageInput.fullAddress), model: imageModel, apiKey: imageApiKey, size: typeof imageInput.size === "string" ? imageInput.size.trim() || "1024x1024" : "1024x1024" };
+  }
+  const next: ModelConfig = { id: existing?.id || randomUUID(), name, protocol, baseUrl, fullAddress, model, imageGeneration, apiKey, vendor, modelsUrl };
   store.models = existing ? store.models.map((item) => item.id === existing.id ? next : item) : [...store.models, next];
   if (!store.defaultModelId) store.defaultModelId = next.id;
   await writeStore(store);
@@ -158,7 +194,7 @@ export async function discoverProviderModels(input: { vendor?: string; modelsUrl
   return [...new Set(models)].sort((a, b) => a.localeCompare(b));
 }
 
-export async function saveModelsBatch(input: { protocol: ModelConfig["protocol"]; baseUrl: string; fullAddress?: boolean; apiKey: string; name: string; vendor?: string; modelsUrl?: string; credentialSourceModelId?: string; models: Array<{ name: string; model: string }> }) {
+export async function saveModelsBatch(input: { protocol: ModelConfig["protocol"]; baseUrl: string; fullAddress?: boolean; apiKey: string; name: string; vendor?: string; modelsUrl?: string; imageGeneration?: ImageGenerationInput | null; credentialSourceModelId?: string; models: Array<{ name: string; model: string }> }) {
   const store = await readStore();
   const { protocol } = input;
   const name = input.name.trim();
@@ -174,7 +210,16 @@ export async function saveModelsBatch(input: { protocol: ModelConfig["protocol"]
   if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") throw new Error("API 地址必须使用 HTTP 或 HTTPS。");
   for (const entry of models) {
     const existing = store.models.find((item) => item.protocol === protocol && item.baseUrl === baseUrl && item.model === entry.model);
-    const next: ModelConfig = { id: existing?.id || randomUUID(), name: entry.name, protocol, baseUrl, fullAddress: Boolean(input.fullAddress), model: entry.model, apiKey, vendor: input.vendor || "custom", modelsUrl: input.modelsUrl?.trim() || "" };
+    const imageInput = input.imageGeneration;
+    let imageGeneration: ImageGenerationConfig | undefined = input.imageGeneration === undefined ? existing?.imageGeneration : undefined;
+    if (imageInput) {
+      if (imageInput.provider !== "openai-images" && imageInput.provider !== "qwen-dashscope") throw new Error("请选择支持的图片生成接口。");
+      const imageBaseUrl = imageInput.baseUrl.trim();
+      const imageApiKey = imageInput.apiKey?.trim() || existing?.imageGeneration?.apiKey || "";
+      if (!imageInput.model.trim() || !imageBaseUrl || !imageApiKey) throw new Error("请填写图片生成 API 地址、模型 ID 和 API Key。");
+      imageGeneration = { ...imageInput, baseUrl: imageBaseUrl, model: imageInput.model.trim(), apiKey: imageApiKey, size: imageInput.size.trim() || "1024x1024" };
+    }
+    const next: ModelConfig = { id: existing?.id || randomUUID(), name: entry.name, protocol, baseUrl, fullAddress: Boolean(input.fullAddress), model: entry.model, imageGeneration, apiKey, vendor: input.vendor || "custom", modelsUrl: input.modelsUrl?.trim() || "" };
     if (existing) store.models = store.models.map((item) => item.id === existing.id ? next : item);
     else store.models.push(next);
     if (!store.defaultModelId) store.defaultModelId = next.id;
@@ -267,6 +312,42 @@ function imageData(image: AgentImageInput) {
   return { mediaType: match[1], data: match[2] };
 }
 
+export async function requestImageGeneration(config: ImageGenerationConfig, prompt: string) {
+  const endpoint = config.fullAddress
+    ? config.baseUrl
+    : config.provider === "qwen-dashscope"
+      ? `${config.baseUrl.replace(/\/+$/, "")}/api/v1/services/aigc/multimodal-generation/generation`
+      : `${config.baseUrl.replace(/\/+$/, "")}/images/generations`;
+  const body = config.provider === "qwen-dashscope"
+    ? { model: config.model, input: { messages: [{ role: "user", content: [{ text: prompt }] }] }, parameters: { size: config.size } }
+    : { model: config.model, prompt, size: config.size, n: 1 };
+  let response: Response;
+  try {
+    response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(180_000) });
+  } catch (error) {
+    throw new ModelServiceError(fetchFailureMessage(error));
+  }
+  const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+  if (!response.ok || !payload) throw new ModelServiceError(`图片生成服务返回 HTTP ${response.status}，请检查图片接口、模型名称和 API Key。`);
+  const outputs: string[] = [];
+  const dataItems = Array.isArray(payload.data) ? payload.data as Array<Record<string, unknown>> : [];
+  for (const item of dataItems) {
+    if (typeof item.b64_json === "string" && item.b64_json) outputs.push(`data:image/png;base64,${item.b64_json}`);
+    else if (typeof item.url === "string" && item.url) outputs.push(item.url);
+  }
+  const output = payload.output as Record<string, unknown> | undefined;
+  const choices = Array.isArray(output?.choices) ? output.choices as Array<Record<string, unknown>> : [];
+  const message = choices[0]?.message as Record<string, unknown> | undefined;
+  const content = Array.isArray(message?.content) ? message.content as Array<Record<string, unknown>> : [];
+  for (const item of content) {
+    if (typeof item.image === "string" && item.image) outputs.push(item.image);
+    if (typeof item.image_base64 === "string" && item.image_base64) outputs.push(`data:image/png;base64,${item.image_base64}`);
+  }
+  if (typeof payload.error === "object" && payload.error) throw new ModelServiceError("图片生成服务返回错误，请检查接口配置和 API Key。");
+  if (!outputs.length) throw new ModelServiceError("图片生成服务未返回可用图片。");
+  return outputs;
+}
+
 export async function requestModelAgentTurn(
   config: ModelConfig,
   messages: AgentMessage[],
@@ -320,7 +401,6 @@ export async function requestModelAgentTurn(
       model: config.model, ...(system ? { instructions: system } : {}), input,
       tools: [
         ...tools.map((tool) => ({ type: "function", name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false })),
-        ...(config.model.toLowerCase().includes("gpt-5.6-luna") ? [{ type: "image_generation", model: "gpt-image-2.5-sunburst", action: "auto", output_format: "png" }] : []),
       ],
       stream: true, store: false, max_output_tokens: 900,
     };

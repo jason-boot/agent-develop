@@ -40,4 +40,4 @@ export type UsageChartSpec = {
 
 export type ToolTrace = { tool: string; label: string; detail: string };
 export type ProjectFileChange = { path: string; content: string; originalContent?: string; operation: "create" | "update" };
-export type ChatReply = { answer: string; records: UsageRecord[]; summary: UsageSummary; intent: string; periodLabel: string; from?: string; to?: string; trace: ToolTrace[]; messageOnly?: boolean; showRecords?: boolean; dailyModelUsage?: DailyModelUsage[]; chartSpec?: UsageChartSpec; generatedImages?: string[]; projectChanges?: ProjectFileChange[] };
+export type ChatReply = { answer: string; records: UsageRecord[]; summary: UsageSummary; intent: string; periodLabel: string; from?: string; to?: string; trace: ToolTrace[]; messageOnly?: boolean; showRecords?: boolean; dailyModelUsage?: DailyModelUsage[]; chartSpec?: UsageChartSpec; generatedImages?: string[]; generatedVideos?: string[]; generatedVideoTaskIds?: string[]; generatedVideoTasks?: Array<{ id: string; status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED"; videoUrl?: string; error?: string }>; projectChanges?: ProjectFileChange[] };

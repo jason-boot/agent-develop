@@ -50,10 +50,11 @@ export async function connectLocalUsageMcpClient(input: { command: string; args?
 export async function callUsageMcpTool(client: Client, name: string, args: Record<string, unknown> = {}) {
   const result = await client.callTool({ name, arguments: args });
   if (result.isError) {
-    const message = name === "query_usage"
-      ? "使用记录查询工具未能完成请求。请检查数据库连接、数据表名和字段配置；详情请查看服务端日志。"
-      : "MCP 工具执行失败，请检查该工具的配置和服务状态；详情请查看服务端日志。";
-    throw new Error(message);
+    const blocks = result.content as Array<{ type: string; text?: string }>;
+    const detail = blocks.filter((block) => block.type === "text").map((block) => block.text || "").filter(Boolean).join("\n").replace(/Bearer\s+[^\s,"']+/gi, "Bearer [已隐藏]").slice(0, 1500);
+    console.warn("MCP tool returned an error", { name, detail: detail || "No error details returned." });
+    if (name === "query_usage") throw new Error("使用记录查询工具未能完成请求。请检查数据库连接、数据表名和字段配置；详情请查看服务端日志。");
+    throw new Error(detail ? `MCP 工具 ${name} 执行失败：${detail}` : "MCP 工具执行失败，请检查该工具的配置和服务状态；详情请查看服务端日志。");
   }
   const blocks = result.content as Array<{ type: string; text?: string }>;
   const texts = blocks.filter((block) => block.type === "text").map((block) => block.text || "");
