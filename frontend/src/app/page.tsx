@@ -63,8 +63,8 @@ type InternalMcpEntry = { id: string; name: string; description: string; url: st
 type BrowserMcpStatus = { id: string; configured: boolean; connected: boolean; toolCount: number; installSource?: string; installDirectory?: string; packageName?: string; installed?: boolean; installedVersion?: string; error?: string };
 type ExternalMcpServer = { id: string; name: string; transport: "http" | "stdio" | "bridge"; bridgeServerId?: string; url: string; command: string; args: string[]; cwd: string; envKeys: string[]; enabled: boolean; hasToken: boolean; hasEnv: boolean; builtInPresetId?: BuiltInRemoteMcpId; builtInConfigured?: boolean };
 const builtInInternalMcps: InternalMcpEntry[] = [
-  { id: "mysql", name: "MySQL MCP", description: "连接本机 MySQL，只读查看表结构并查询数据。", url: "http://127.0.0.1:8931/mysql-mcp" },
-  { id: "playwright", name: "Playwright MCP", description: "操作浏览器，打开网页、点击元素、填写表单并读取页面内容。", url: "http://127.0.0.1:8931/mcp" },
+  { id: "mysql", name: "MySQL MCP", description: "连接本机 MySQL，只读查看表结构并查询数据。", url: "bridge://mysql" },
+  { id: "playwright", name: "Playwright MCP", description: "操作浏览器，打开网页、点击元素、填写表单并读取页面内容。", url: "bridge://playwright" },
   { id: "@modelcontextprotocol/server-filesystem", name: "Filesystem MCP", description: "访问你指定的本机目录；配置时需要填写允许访问的目录。", url: "bridge://@modelcontextprotocol/server-filesystem" },
   { id: "@modelcontextprotocol/server-memory", name: "Memory MCP", description: "使用本机知识图谱保存和查询记忆。", url: "bridge://@modelcontextprotocol/server-memory" },
   { id: "@modelcontextprotocol/server-sequential-thinking", name: "Sequential Thinking MCP", description: "将复杂问题拆成步骤，并支持修订和分支推理；当前版本需要 Node.js 24+。", url: "bridge://@modelcontextprotocol/server-sequential-thinking" },
@@ -1645,7 +1645,8 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       const data = await readApiJson<{ mcps?: InternalMcpEntry[]; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "获取 MCP 列表失败。");
       const appMcps = data.mcps?.length ? data.mcps : builtInInternalMcps.slice(0, 2);
-      setInternalMcps([...appMcps, ...builtInInternalMcps.filter((entry) => entry.url.startsWith("bridge://") && !appMcps.some((item) => item.id === entry.id))]);
+      const bridgeMcps = appMcps.map((entry) => entry.id === "mysql" || entry.id === "playwright" ? { ...entry, url: `bridge://${entry.id}` } : entry);
+      setInternalMcps([...bridgeMcps, ...builtInInternalMcps.filter((entry) => entry.url.startsWith("bridge://") && !bridgeMcps.some((item) => item.id === entry.id))]);
     } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "获取 MCP 列表失败。"); }
     finally { setInternalMcpFetching(false); }
   }
