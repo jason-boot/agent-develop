@@ -67,7 +67,9 @@ function imageFilename(index: number, mimeType: string) {
 
 function attachmentResponse(bytes: Uint8Array, mimeType: string, index: number) {
   const filename = imageFilename(index, mimeType);
-  return new Response(bytes, { headers: {
+  const body = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(body).set(bytes);
+  return new Response(body, { headers: {
     "Content-Type": mimeType,
     "Content-Length": String(bytes.byteLength),
     "Content-Disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
