@@ -1,5 +1,5 @@
 #define MyAppName "Little Sunshine Browser Bridge"
-#define MyAppVersion "1.2.2"
+#define MyAppVersion "1.2.6"
 
 [Setup]
 AppId=LittleSunshineBrowserBridge
@@ -10,12 +10,13 @@ DefaultDirName={localappdata}\Programs\Little Sunshine Browser Bridge
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+SetupIconFile=frontend\public\browser-bridge.ico
 OutputDir=dist\windows
-OutputBaseFilename=BrowserBridge-Windows-Setup-v1.2.2
+OutputBaseFilename=BrowserBridge-Windows-Setup-v1.2.6
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\Start-BrowserBridge.cmd
+UninstallDisplayIcon={app}\browser-bridge.ico
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
@@ -23,10 +24,11 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 [Files]
 Source: "frontend\public\Install-BrowserBridge.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "frontend\public\browser-bridge.zip"; DestDir: "{app}"; Flags: ignoreversion
+Source: "frontend\public\browser-bridge.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\Start-BrowserBridge.cmd"; WorkingDir: "{app}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Start-BrowserBridge.cmd"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\Start-BrowserBridge.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\browser-bridge.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Start-BrowserBridge.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\browser-bridge.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "powershell.exe"; Parameters: "-NoLogo -NoProfile -ExecutionPolicy Bypass -File ""{app}\Install-BrowserBridge.ps1"" -InstallDir ""{app}"" -NoPause"; WorkingDir: "{app}"; StatusMsg: "Installing BrowserBridge dependencies..."; Flags: waituntilterminated

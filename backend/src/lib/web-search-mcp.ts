@@ -53,6 +53,14 @@ export async function getActiveWebSearchMcpConfig() {
   return { providerId, ...config };
 }
 
+export async function getLegacyWebSearchProviderCredentials(providerId: WebSearchProviderId) {
+  const settings = await readSettings();
+  return {
+    apiKey: settings.providers[providerId]?.apiKey || "",
+    enabled: settings.enabled && settings.activeProvider === providerId,
+  };
+}
+
 export async function getPublicWebSearchMcpConfig(): Promise<PublicWebSearchMcpConfig> {
   const settings = await readSettings();
   const providers: PublicWebSearchMcpConfig["providers"] = {};

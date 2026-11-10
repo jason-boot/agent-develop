@@ -37,12 +37,11 @@ function compareVersions(left: string, right: string) {
 type LocalProject = { id: string; name: string };
 type ModelProtocol = "chat" | "messages" | "responses";
 type ImageGenerationProviderId = "agnes" | "openai" | "qwen";
-type WebSearchProviderId = "tavily" | "exa" | "firecrawl";
-type WebSearchMcpProfile = { enabled: boolean; activeProvider: WebSearchProviderId | null; providers: Partial<Record<WebSearchProviderId, { endpoint: string; hasApiKey: boolean }>> };
-const webSearchProviderCatalog: Array<{ id: WebSearchProviderId; name: string; endpoint: string; description: string; requiresApiKey: boolean }> = [
-  { id: "exa", name: "Exa", endpoint: "https://mcp.exa.ai/mcp", description: "网页搜索与内容检索", requiresApiKey: false },
-  { id: "firecrawl", name: "Firecrawl", endpoint: "https://mcp.firecrawl.dev/v2/mcp", description: "网页搜索与网页内容抓取", requiresApiKey: true },
-  { id: "tavily", name: "Tavily", endpoint: "https://mcp.tavily.com/mcp", description: "实时网页搜索与内容提取", requiresApiKey: true },
+type BuiltInRemoteMcpId = "context7" | "tavily";
+type BuiltInRemoteMcpPreset = { id: BuiltInRemoteMcpId; name: string; url: string; description: string; requiresApiKey: boolean; keyNotice: string; apiKeyUrl: string };
+const builtInRemoteMcpCatalog: BuiltInRemoteMcpPreset[] = [
+  { id: "context7", name: "Context7", url: "https://mcp.context7.com/mcp", description: "检索软件库和框架的最新文档。", requiresApiKey: false, keyNotice: "建议配置 API Key；免 Key 使用额度较低。", apiKeyUrl: "https://context7.com/dashboard?tab=settings" },
+  { id: "tavily", name: "Tavily", url: "https://mcp.tavily.com/mcp", description: "实时网页搜索与网页内容提取。", requiresApiKey: true, keyNotice: "需要配置 Tavily API Key 才能连接和使用。", apiKeyUrl: "https://app.tavily.com/home" },
 ];
 type QwenImageRegion = "beijing" | "singapore" | "virginia" | "frankfurt" | "tokyo";
 type ImageGenerationProviderProfile = { provider: "openai-images" | "qwen-dashscope"; baseUrl: string; fullAddress: boolean; model: string; size: string; hasApiKey: boolean };
@@ -62,7 +61,7 @@ type VideoGenerationProfile = { enabled: boolean; provider: "aliyun-bailian"; re
 type McpTool = { name: string; title?: string; description?: string; enabled: boolean; readOnly?: boolean; destructive?: boolean; manuallyAllowed?: boolean; canEnable?: boolean };
 type InternalMcpEntry = { id: string; name: string; description: string; url: string };
 type BrowserMcpStatus = { id: string; configured: boolean; connected: boolean; toolCount: number; installSource?: string; installDirectory?: string; packageName?: string; installed?: boolean; installedVersion?: string; error?: string };
-type ExternalMcpServer = { id: string; name: string; transport: "http" | "stdio" | "bridge"; bridgeServerId?: string; url: string; command: string; args: string[]; cwd: string; envKeys: string[]; enabled: boolean; hasToken: boolean; hasEnv: boolean };
+type ExternalMcpServer = { id: string; name: string; transport: "http" | "stdio" | "bridge"; bridgeServerId?: string; url: string; command: string; args: string[]; cwd: string; envKeys: string[]; enabled: boolean; hasToken: boolean; hasEnv: boolean; builtInPresetId?: BuiltInRemoteMcpId; builtInConfigured?: boolean };
 const builtInInternalMcps: InternalMcpEntry[] = [
   { id: "mysql", name: "MySQL MCP", description: "连接本机 MySQL，只读查看表结构并查询数据。", url: "http://127.0.0.1:8931/mysql-mcp" },
   { id: "playwright", name: "Playwright MCP", description: "操作浏览器，打开网页、点击元素、填写表单并读取页面内容。", url: "http://127.0.0.1:8931/mcp" },
@@ -606,14 +605,6 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [imageMcpFeedback, setImageMcpFeedback] = useState("");
   const [imageMcpSettings, setImageMcpSettings] = useState<ImageGenerationMcpProfile>({ enabled: false, activeProvider: null, providers: {} });
   const [imageMcpEditorOpen, setImageMcpEditorOpen] = useState(false);
-  const [webSearchSettings, setWebSearchSettings] = useState<WebSearchMcpProfile>({ enabled: false, activeProvider: null, providers: {} });
-  const [webSearchProvider, setWebSearchProvider] = useState<WebSearchProviderId>("exa");
-  const [webSearchApiKey, setWebSearchApiKey] = useState("");
-  const [webSearchHasKey, setWebSearchHasKey] = useState(false);
-  const [webSearchSaving, setWebSearchSaving] = useState(false);
-  const [webSearchActivating, setWebSearchActivating] = useState<WebSearchProviderId | null>(null);
-  const [webSearchFeedback, setWebSearchFeedback] = useState("");
-  const [webSearchEditorOpen, setWebSearchEditorOpen] = useState(false);
   const [videoMcpSettings, setVideoMcpSettings] = useState<VideoGenerationProfile>({ enabled: false, provider: "aliyun-bailian", region: "beijing", workspaceId: "", model: "wan3.0-video", resolution: "720P", duration: 5, hasApiKey: false, baseUrl: "" });
   const [videoMcpEditorOpen, setVideoMcpEditorOpen] = useState(false);
   const [videoMcpRegion, setVideoMcpRegion] = useState<BailianVideoRegion>("beijing");
@@ -641,15 +632,14 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [modelToDelete, setModelToDelete] = useState<ModelProfile | null>(null);
   const [modelDeleting, setModelDeleting] = useState(false);
   const [mcpPageOpen, setMcpPageOpen] = useState(false);
-  const [mcpManagerCategory, setMcpManagerCategory] = useState<"image-generation" | "video-generation" | "web-search" | "internal-tools" | "external">("image-generation");
+  const [mcpManagerCategory, setMcpManagerCategory] = useState<"image-generation" | "video-generation" | "internal-tools" | "external">("image-generation");
   const [externalMcpRuntime, setExternalMcpRuntime] = useState<"web" | "desktop">("web");
   const [externalMcpServers, setExternalMcpServers] = useState<ExternalMcpServer[]>([]);
-  const [externalMcpTools, setExternalMcpTools] = useState<Record<string, McpTool[]>>({});
-  const [externalMcpLoading, setExternalMcpLoading] = useState("");
   const [externalMcpUpdating, setExternalMcpUpdating] = useState("");
   const [externalMcpServerToDelete, setExternalMcpServerToDelete] = useState<ExternalMcpServer | null>(null);
   const [externalMcpError, setExternalMcpError] = useState("");
   const [externalMcpEditorOpen, setExternalMcpEditorOpen] = useState(false);
+  const [externalMcpPresetId, setExternalMcpPresetId] = useState<BuiltInRemoteMcpId | null>(null);
   const [externalMcpName, setExternalMcpName] = useState("");
   const [externalMcpUrl, setExternalMcpUrl] = useState("");
   const [externalMcpToken, setExternalMcpToken] = useState("");
@@ -663,7 +653,6 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [externalMcpTested, setExternalMcpTested] = useState(false);
   const [externalMcpEditingServer, setExternalMcpEditingServer] = useState<ExternalMcpServer | null>(null);
   const [externalMcpPreview, setExternalMcpPreview] = useState<McpTool[]>([]);
-  const [externalMcpExpandedId, setExternalMcpExpandedId] = useState("");
   const [internalMcpFetching, setInternalMcpFetching] = useState(false);
   const internalMcpLoadStarted = useRef(false);
   const [internalMcpUpdating, setInternalMcpUpdating] = useState("");
@@ -772,7 +761,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
         setConversations(saved);
         const restoreMcpPage = !startFreshSession && window.sessionStorage.getItem("little-sunshine-current-page") === "mcp";
         const storedMcpCategory = window.sessionStorage.getItem("little-sunshine-mcp-category");
-        const restoreMcpCategory = storedMcpCategory === "image-generation" || storedMcpCategory === "video-generation" || storedMcpCategory === "web-search" || storedMcpCategory === "internal-tools" || storedMcpCategory === "external" ? storedMcpCategory : "image-generation";
+        const restoreMcpCategory = storedMcpCategory === "image-generation" || storedMcpCategory === "video-generation" || storedMcpCategory === "internal-tools" || storedMcpCategory === "external" ? storedMcpCategory : storedMcpCategory === "web-search" ? "external" : "image-generation";
         if (startFreshSession) {
           window.sessionStorage.removeItem("little-sunshine-current-page");
           setActiveConversationId("");
@@ -1524,7 +1513,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     window.sessionStorage.setItem("little-sunshine-current-page", "mcp");
     setMcpPageOpen(true);
     try {
-      const [serverResponse, imageResponse, videoResponse, webSearchResponse] = await Promise.all([fetch("/api/mcp/servers"), fetch("/api/mcp/image-generation"), fetch("/api/mcp/video-generation"), fetch("/api/mcp/web-search")]);
+      const [serverResponse, imageResponse, videoResponse] = await Promise.all([fetch("/api/mcp/servers"), fetch("/api/mcp/image-generation"), fetch("/api/mcp/video-generation")]);
       const serverData = await serverResponse.json() as { servers?: ExternalMcpServer[]; runtime?: "web" | "desktop"; error?: string };
       if (!serverResponse.ok) throw new Error(serverData.error || "读取远程工具配置失败。");
       setExternalMcpServers(serverData.servers || []);
@@ -1533,7 +1522,6 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
         setImageMcpSettings(await imageResponse.json() as ImageGenerationMcpProfile);
       }
       if (videoResponse.ok) setVideoMcpSettings(await videoResponse.json() as VideoGenerationProfile);
-      if (webSearchResponse.ok) setWebSearchSettings(await webSearchResponse.json() as WebSearchMcpProfile);
     } catch (e) {
       setExternalMcpError(e instanceof Error ? e.message : "读取远程工具配置失败。");
     }
@@ -1603,36 +1591,13 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     finally { setImageMcpActivating(null); }
   }
 
-  function openWebSearchEditor(providerId: WebSearchProviderId) {
-    const config = webSearchSettings.providers[providerId];
-    setWebSearchProvider(providerId); setWebSearchApiKey(""); setWebSearchHasKey(Boolean(config?.hasApiKey)); setWebSearchFeedback(""); setWebSearchEditorOpen(true);
-  }
-
-  async function saveWebSearchMcp() {
-    setWebSearchSaving(true); setWebSearchFeedback("");
-    try {
-      const response = await fetch("/api/mcp/web-search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: webSearchProvider, apiKey: webSearchApiKey, activate: true }) });
-      const data = await readApiJson<WebSearchMcpProfile & { error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || "保存网页搜索配置失败。");
-      setWebSearchSettings(data); setWebSearchApiKey(""); setWebSearchHasKey(Boolean(data.providers[webSearchProvider]?.hasApiKey)); setWebSearchEditorOpen(false); setWebSearchFeedback("网页搜索配置已保存并启用。");
-    } catch (error) { setWebSearchFeedback(error instanceof Error ? error.message : "保存网页搜索配置失败。"); }
-    finally { setWebSearchSaving(false); }
-  }
-
-  async function activateWebSearchProvider(providerId: WebSearchProviderId) {
-    setWebSearchActivating(providerId); setWebSearchFeedback("");
-    try {
-      const response = await fetch("/api/mcp/web-search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "activate", providerId }) });
-      const data = await readApiJson<WebSearchMcpProfile & { error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || "切换网页搜索服务商失败。");
-      setWebSearchSettings(data);
-    } catch (error) { setWebSearchFeedback(error instanceof Error ? error.message : "切换网页搜索服务商失败。"); }
-    finally { setWebSearchActivating(null); }
-  }
-
   function openExternalMcpEditor(server?: ExternalMcpServer) {
-    setExternalMcpEditingServer(server || null);
-    setExternalMcpName(server?.name || ""); setExternalMcpUrl(server?.transport === "http" ? server.url : ""); setExternalMcpToken("");
+    const presetId = server?.builtInPresetId || null;
+    const isSavedPreset = Boolean(presetId && server?.builtInConfigured);
+    const preset = presetId ? builtInRemoteMcpCatalog.find((item) => item.id === presetId) : undefined;
+    setExternalMcpPresetId(presetId);
+    setExternalMcpEditingServer(server && (!presetId || isSavedPreset) ? server : null);
+    setExternalMcpName(preset?.name || server?.name || ""); setExternalMcpUrl(preset?.url || (server?.transport === "http" ? server.url : "")); setExternalMcpToken("");
     setExternalMcpTransport(server?.transport === "stdio" ? "stdio" : "http"); setExternalMcpCommand(server?.command || ""); setExternalMcpArgsJson(JSON.stringify(server?.args || [], null, 2)); setExternalMcpEnvJson("{}"); setExternalMcpCwd(server?.cwd || "");
     setExternalMcpTested(false); setExternalMcpPreview([]); setExternalMcpError("");
     setExternalMcpEditorOpen(true);
@@ -1668,19 +1633,9 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       if (data.server) setExternalMcpServers((items) => items.some((item) => item.id === data.server!.id) ? items.map((item) => item.id === data.server!.id ? data.server! : item) : [...items, data.server!]);
       setExternalMcpEditorOpen(false);
       setExternalMcpEditingServer(null);
+      setExternalMcpPresetId(null);
     } catch (e) { setExternalMcpError(e instanceof Error ? e.message : externalMcpEditingServer ? "修改远程 MCP 配置失败。" : "添加远程 MCP 服务器失败。"); }
     finally { setExternalMcpSaving(false); }
-  }
-
-  async function loadExternalMcpTools(server: ExternalMcpServer) {
-    setExternalMcpLoading(server.id); setExternalMcpError("");
-    try {
-      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "inspect", id: server.id }) });
-      const data = await readApiJson<{ tools?: McpTool[]; error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || "读取远程工具失败。");
-      setExternalMcpTools((items) => ({ ...items, [server.id]: data.tools || [] }));
-    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "读取远程工具失败。"); }
-    finally { setExternalMcpLoading(""); }
   }
 
   async function fetchInternalMcpList() {
@@ -1771,11 +1726,6 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       if (!response.ok || !data.uninstalled) throw new Error(data.error || `卸载 ${server.name} 失败。`);
       setBrowserMcpStatuses(data.mcpServers || []);
       setExternalMcpServers((items) => items.filter((item) => item.transport !== "bridge" || item.bridgeServerId !== (data.removedServerId || server.id)));
-      setExternalMcpTools((items) => {
-        const next = { ...items };
-        for (const item of externalMcpServers.filter((entry) => entry.transport === "bridge" && entry.bridgeServerId === (data.removedServerId || server.id))) delete next[item.id];
-        return next;
-      });
     } catch (e) {
       setMcpUninstallErrors((current) => ({ ...current, [server.id]: e instanceof Error ? e.message : `卸载 ${server.name} 失败。` }));
     } finally { setMcpUninstallingId(""); setLocalMcpToUninstall(null); }
@@ -1831,7 +1781,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     return () => { active = false; clearInterval(timer); };
   }, [mcpPageOpen, mcpManagerCategory]);
 
-  function defaultLocalMcpConfig(serverId: string) {
+  function defaultLocalMcpConfig(serverId: string): { command: string; args: string[]; env: Record<string, string>; cwd: string } {
     const windows = /Windows/i.test(navigator.userAgent);
     if (serverId === "mysql") {
       const mysqlStatus = browserMcpStatuses.find((status) => status.id === "mysql");
@@ -2037,18 +1987,6 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     finally { setExternalMcpUpdating(""); }
   }
 
-  async function toggleExternalMcpTool(server: ExternalMcpServer, tool: McpTool) {
-    const key = server.id + ":" + tool.name;
-    setExternalMcpUpdating(key); setExternalMcpError("");
-    try {
-      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle-tool", id: server.id, name: tool.name, enabled: !tool.enabled }) });
-      const data = await readApiJson<{ enabled?: boolean; manuallyAllowed?: boolean; error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || "更新远程工具状态失败。");
-      setExternalMcpTools((items) => ({ ...items, [server.id]: (items[server.id] || []).map((item) => item.name === tool.name ? { ...item, enabled: Boolean(data.enabled), manuallyAllowed: Boolean(data.manuallyAllowed) } : item) }));
-    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "更新远程工具状态失败。"); }
-    finally { setExternalMcpUpdating(""); }
-  }
-
   async function deleteExternalMcpServer(server: ExternalMcpServer) {
     setExternalMcpServerToDelete(server);
   }
@@ -2062,18 +2000,48 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       const data = await readApiJson<{ error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "删除 MCP 服务器失败。");
       setExternalMcpServers((items) => items.filter((item) => item.id !== server.id));
-      setExternalMcpTools((items) => { const next = { ...items }; delete next[server.id]; return next; });
     } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "删除 MCP 服务器失败。"); }
     finally { setExternalMcpUpdating(""); setExternalMcpServerToDelete(null); }
   }
 
-  const otherMcpServers = externalMcpServers.filter((server) => server.transport !== "bridge" && server.name !== "内部工具" && !server.name.startsWith("内部工具："));
+  const builtinRemoteEndpoint = (url: string) => url.replace(/\/+$/, "");
+  const builtinRemoteServers: ExternalMcpServer[] = builtInRemoteMcpCatalog.map((preset) => {
+    const saved = externalMcpServers.find((server) => server.transport === "http" && builtinRemoteEndpoint(server.url) === preset.url);
+    return {
+      ...(saved || { id: `builtin-${preset.id}`, name: preset.name, transport: "http" as const, url: preset.url, command: "", args: [], cwd: "", envKeys: [], enabled: false, hasToken: false, hasEnv: false }),
+      name: preset.name,
+      builtInPresetId: preset.id,
+      builtInConfigured: Boolean(saved),
+    };
+  });
+  const builtinRemoteUrls = new Set(builtInRemoteMcpCatalog.map((preset) => preset.url));
+  const otherMcpServers = [...builtinRemoteServers, ...externalMcpServers.filter((server) => server.transport !== "bridge" && server.name !== "内部工具" && !server.name.startsWith("内部工具：") && !builtinRemoteUrls.has(builtinRemoteEndpoint(server.url)))];
   const builtInMcpIds = new Set(internalMcps.map((server) => server.id));
   const bridgeLocalMcpServers = externalMcpServers.filter((server) => server.transport === "bridge");
-  const customBridgeMcpServers = bridgeLocalMcpServers.filter((server) => !builtInMcpIds.has(server.bridgeServerId || ""));
+  const builtinLocalMcpIds = new Set([...Object.keys(builtinLocalMcpPackages), ...Object.values(builtinLocalMcpPackages).flatMap((name) => [name, name.split("/").pop() || name])]);
+  const builtinLocalMcpNames = new Set(builtInInternalMcps.filter((server) => server.url.startsWith("bridge://")).flatMap((server) => {
+    const packageName = builtinLocalMcpPackages[server.id] || "";
+    const packageTail = packageName.split("/").pop() || packageName;
+    return [server.name, packageName, packageTail, packageTail.replace(/^server-/, "")].map((value) => value.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  }));
+  const builtinLocalMcpStatusIds = new Set(browserMcpStatuses.filter((status) => builtinLocalMcpIds.has(status.packageName || "")).map((status) => status.id));
+  const isBuiltinLocalBridgeServer = (server: ExternalMcpServer) => {
+    const serverId = server.bridgeServerId || "";
+    const normalizedName = server.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return builtInMcpIds.has(serverId) || builtinLocalMcpIds.has(serverId) || builtinLocalMcpStatusIds.has(serverId) || [...builtinLocalMcpNames].some((name) => name && normalizedName.includes(name));
+  };
+  const customBridgeMcpServers = bridgeLocalMcpServers.filter((server) => !isBuiltinLocalBridgeServer(server));
   const knownBridgeIds = new Set([...internalMcps.map((server) => server.id), ...bridgeLocalMcpServers.map((server) => server.bridgeServerId || "")]);
   const presetPackages = new Set(["@futuretea/mysql-mcp-server", "@playwright/mcp"]);
-  const installedBridgeCards = browserMcpStatuses.filter((status) => status.installed && !presetPackages.has(status.packageName || "") && !knownBridgeIds.has(status.id) && !hiddenMcpPluginIds.includes(status.id)).map((status) => ({
+  const builtInBridgeIds = builtinLocalMcpIds;
+  const installedBridgeCardKeys = new Set<string>();
+  const installedBridgeCards = browserMcpStatuses.filter((status) => {
+    const packageName = status.packageName || "";
+    const identity = packageName || status.id;
+    if (!status.installed || presetPackages.has(packageName) || builtInBridgeIds.has(packageName) || builtInBridgeIds.has(status.id) || knownBridgeIds.has(status.id) || hiddenMcpPluginIds.includes(status.id) || installedBridgeCardKeys.has(identity)) return false;
+    installedBridgeCardKeys.add(identity);
+    return true;
+  }).map((status) => ({
     id: status.id,
     name: status.packageName ? titleFromNpmPackageName(status.packageName) : `本地 MCP ${status.id}`,
     description: `本机已安装插件 · ${status.packageName || status.id}`,
@@ -2166,7 +2134,6 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
         <nav className="mcp-category-sidebar" role="tablist" aria-label="MCP 工具分类" aria-orientation="vertical">
           <Button type="button" role="tab" aria-selected={mcpManagerCategory === "image-generation"} className="mcp-category-button" variant={mcpManagerCategory === "image-generation" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("image-generation")}>图像生成</Button>
           <Button type="button" role="tab" aria-selected={mcpManagerCategory === "video-generation"} className="mcp-category-button" variant={mcpManagerCategory === "video-generation" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("video-generation")}>视频生成</Button>
-          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "web-search"} className="mcp-category-button" variant={mcpManagerCategory === "web-search" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("web-search")}>网页搜索</Button>
           <Button type="button" role="tab" aria-selected={mcpManagerCategory === "internal-tools"} className="mcp-category-button" variant={mcpManagerCategory === "internal-tools" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("internal-tools")}>本地工具</Button>
           <Button type="button" role="tab" aria-selected={mcpManagerCategory === "external"} className="mcp-category-button" variant={mcpManagerCategory === "external" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("external")}>远程工具</Button>
         </nav>
@@ -2174,48 +2141,28 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
         {mcpManagerCategory === "image-generation" && <div role="tabpanel" aria-label="图像生成">
         <div className="mb-4"><strong className="text-sm">图像生成服务商</strong><p className="mt-1 text-xs text-muted-foreground">聊天模型通过 generate_image 工具调用当前启用的服务商。点击卡片配置 API。</p></div>
         {imageMcpFeedback && <div role="status" className={`mb-3 rounded-md border px-3 py-2 text-xs ${imageMcpFeedback.includes("失败") || imageMcpFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{imageMcpFeedback}</div>}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mcp-tools-list grid grid-cols-1 gap-3 sm:grid-cols-2">
           {imageGenerationProviderCatalog.map((provider) => {
             const config = imageMcpSettings.providers[provider.id];
             const configured = Boolean(config?.hasApiKey && config.model && config.baseUrl && (provider.id !== "qwen" || parseQwenImageEndpoint(config.baseUrl)));
             const active = configured && imageMcpSettings.enabled && imageMcpSettings.activeProvider === provider.id;
-            return <div key={provider.id} className="relative flex min-h-36 flex-col rounded-xl border border-zinc-200 bg-white p-4 transition hover:border-zinc-400 hover:shadow-sm">
-              <span className="absolute right-3 top-3 z-10 flex items-center gap-1">{configured && !active && <Button type="button" variant="ghost" size="sm" title="设为当前使用" className="h-5 rounded-full bg-[#f0eff5] px-1.5 text-[9px] font-medium text-[#625b75] shadow-none hover:bg-[#e8e5f1] hover:text-[#40366b]" disabled={imageMcpActivating !== null} onClick={() => void activateImageGenerationProvider(provider.id)}>{imageMcpActivating === provider.id ? "切换中…" : "设为当前"}</Button>}{active && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">当前使用</span>}{configured && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">已配置</span>}</span>
-              <button type="button" onClick={() => openImageGenerationEditor(provider.id)} className="flex flex-1 flex-col items-start gap-2 pr-1 text-left">
-                <strong className="pr-32 text-sm">{provider.name}</strong><span className="text-xs text-muted-foreground">{provider.description}</span>
-                <span className="mt-auto truncate text-xs text-zinc-600">{config?.model || provider.model}</span>
-                <span className="text-xs font-medium text-zinc-800">{configured ? "修改配置" : "配置服务商"} →</span>
-              </button>
-            </div>;
+            return <Card className="mcp-tool-card external-mcp-card" key={provider.id}>
+              <div className="mcp-tool-card-heading has-actions">
+                <div className="external-mcp-server-title"><div className="mcp-tool-card-title-row"><strong>{provider.name}</strong></div><small>{provider.description}</small><small>{config?.model || provider.model}</small></div>
+                {(configured || imageMcpActivating === provider.id) && <div className="mcp-tool-card-actions">{configured && !active && <Button type="button" variant="ghost" size="sm" title="设为当前使用" className="h-5 rounded-full bg-[#f0eff5] px-1.5 text-[9px] font-medium text-[#625b75] shadow-none hover:bg-[#e8e5f1] hover:text-[#40366b]" disabled={imageMcpActivating !== null} onClick={() => void activateImageGenerationProvider(provider.id)}>{imageMcpActivating === provider.id ? "切换中…" : "设为当前"}</Button>}{active && <span className="mcp-status-ready">当前使用</span>}{configured && <span className="mcp-status-ready">已配置</span>}</div>}
+              </div>
+              <div className="mcp-tool-card-bottom flex items-end justify-between gap-3"><span /><Button type="button" variant="outline" size="sm" onClick={() => openImageGenerationEditor(provider.id)}>{configured ? "修改配置" : "配置服务商"}</Button></div>
+            </Card>;
           })}
         </div>
         </div>}
         {mcpManagerCategory === "video-generation" && <div role="tabpanel" aria-label="视频生成">
           <div className="mb-4"><strong className="text-sm">视频生成服务商</strong><p className="mt-1 text-xs text-muted-foreground">聊天模型通过 generate_video 工具调用阿里云百炼万相模型。当前支持文生视频。</p></div>
           {videoMcpFeedback && <div role="status" className={`mb-3 rounded-md border px-3 py-2 text-xs ${videoMcpFeedback.includes("失败") || videoMcpFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{videoMcpFeedback}</div>}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><div className="relative flex min-h-36 flex-col rounded-xl border border-zinc-200 bg-white p-4 transition hover:border-zinc-400 hover:shadow-sm">
-            <button type="button" onClick={openVideoGenerationEditor} className="flex flex-1 flex-col items-start gap-2 pr-1 text-left">
-              {videoMcpSettings.enabled && videoMcpSettings.hasApiKey && videoMcpSettings.workspaceId && <span className="absolute right-3 top-3 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">已配置</span>}
-              <strong className="pr-24 text-sm">阿里云百炼</strong><span className="text-xs text-muted-foreground">万相视频生成 API</span>
-              <span className="mt-auto truncate text-xs text-zinc-600">{videoMcpSettings.model}</span><span className="text-xs font-medium text-zinc-800">{videoMcpSettings.hasApiKey ? "修改配置" : "配置服务商"} →</span>
-            </button>
-          </div></div>
-        </div>}
-        {mcpManagerCategory === "web-search" && <div role="tabpanel" aria-label="网页搜索">
-          <div className="mb-4"><strong className="text-sm">网页搜索服务商</strong><p className="mt-1 text-xs text-muted-foreground">聊天模型可通过当前服务商的 MCP 搜索网页。点击卡片配置；切换当前服务商不会删除其他配置。</p></div>
-          {webSearchFeedback && <div role="status" className={`mb-3 rounded-md border px-3 py-2 text-xs ${webSearchFeedback.includes("失败") || webSearchFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{webSearchFeedback}</div>}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{webSearchProviderCatalog.map((provider) => {
-            const config = webSearchSettings.providers[provider.id];
-            const configured = Boolean(config && (!provider.requiresApiKey || config.hasApiKey));
-            const active = configured && webSearchSettings.enabled && webSearchSettings.activeProvider === provider.id;
-            return <div key={provider.id} className="relative flex min-h-36 flex-col rounded-xl border border-zinc-200 bg-white p-4 transition hover:border-zinc-400 hover:shadow-sm">
-              <span className="absolute right-3 top-3 z-10 flex items-center gap-1">{configured && !active && <Button type="button" variant="ghost" size="sm" title="设为当前使用" className="h-5 rounded-full bg-[#f0eff5] px-1.5 text-[9px] font-medium text-[#625b75] shadow-none hover:bg-[#e8e5f1] hover:text-[#40366b]" disabled={webSearchActivating !== null} onClick={() => void activateWebSearchProvider(provider.id)}>{webSearchActivating === provider.id ? "切换中…" : "设为当前"}</Button>}{active && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">当前使用</span>}{configured && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">已配置</span>}</span>
-              <button type="button" onClick={() => openWebSearchEditor(provider.id)} className="flex flex-1 flex-col items-start gap-2 pr-1 text-left">
-                <strong className="pr-32 text-sm">{provider.name}</strong><span className="text-xs text-muted-foreground">{provider.description}</span>{!provider.requiresApiKey && <span className="text-[11px] text-amber-700">免 Key 可用，额度有限</span>}
-                <span className="mt-auto truncate text-xs text-zinc-600">{provider.endpoint}</span><span className="text-xs font-medium text-zinc-800">{configured ? "修改配置" : "配置服务商"} →</span>
-              </button>
-            </div>;
-          })}</div>
+          <div className="mcp-tools-list grid grid-cols-1 gap-3 sm:grid-cols-2"><Card className="mcp-tool-card external-mcp-card">
+            <div className="mcp-tool-card-heading has-actions"><div className="external-mcp-server-title"><div className="mcp-tool-card-title-row"><strong>阿里云百炼</strong></div><small>万相视频生成 API</small><small>{videoMcpSettings.model}</small></div>{videoMcpSettings.enabled && videoMcpSettings.hasApiKey && videoMcpSettings.workspaceId && <div className="mcp-tool-card-actions"><span className="mcp-status-ready">已配置</span></div>}</div>
+            <div className="mcp-tool-card-bottom flex items-end justify-between gap-3"><span /><Button type="button" variant="outline" size="sm" onClick={openVideoGenerationEditor}>{videoMcpSettings.hasApiKey ? "修改配置" : "配置服务商"}</Button></div>
+          </Card></div>
         </div>}
         {mcpManagerCategory === "internal-tools" && <div role="tabpanel" aria-label="本地工具">
           <div className="mb-4 flex items-start justify-between gap-3"><div><strong className="text-sm">本地 MCP 列表</strong><p className="mt-1 text-xs text-muted-foreground">BrowserBridge 可以启动并转发任意本机 stdio MCP。npm 包安装在桥接程序共享的 plugins 目录，各账号共用安装文件；命令和环境变量按账号分别保存。</p></div><div className="mt-4 flex shrink-0 items-center gap-2"><Button type="button" variant="outline" size="sm" disabled={!browserBridgeConnected} onClick={addLocalMcp}><Plus aria-hidden="true" />添加本地 MCP</Button><Button type="button" variant="outline" size="sm" aria-expanded={browserBridgePanelOpen} onClick={() => setBrowserBridgePanelOpen((open) => !open)}>{browserBridgePanelOpen ? "收起桥接信息" : "查看桥接信息"}</Button></div></div>
@@ -2229,8 +2176,8 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
                 </div>
               </div>
               <code className="mt-1 block break-all rounded border border-zinc-200 bg-white px-2 py-1.5 text-xs">{browserBridgeInstallDirectory || (browserBridgeConnected ? "当前桥接程序版本未上报安装目录，请更新并重启 BrowserBridge。" : "桥接程序未连接，连接后显示安装目录。")}</code>
-              {browserBridgeConnected && (!browserBridgeVersion || (latestBrowserBridgeVersion && compareVersions(browserBridgeVersion, latestBrowserBridgeVersion) === -1)) && <div role="status" className="mt-1 text-xs text-amber-700">{browserBridgeVersion ? "有新版桥接工具可用，请更新并重启。" : "当前桥接工具未上报版本，请下载最新版并重新安装。"} <a className="font-medium underline" href="/BrowserBridge-Windows-Installer-v1.2.2.zip" download>下载最新版</a></div>}
-            </div> : <div className="mb-3 flex flex-wrap items-center justify-end gap-2"><Button asChild type="button" variant="outline" size="sm" className="h-8"><a href="/BrowserBridge-Windows-Installer-v1.2.2.zip" download title="下载桥接工具" aria-label="下载桥接工具"><Download aria-hidden="true" />下载桥接工具</a></Button><Button type="button" variant="outline" size="sm" className="h-8" onClick={() => setBrowserBridgeInstallOpen(true)}>查看安装说明</Button></div>}
+              {browserBridgeConnected && (!browserBridgeVersion || (latestBrowserBridgeVersion && compareVersions(browserBridgeVersion, latestBrowserBridgeVersion) === -1)) && <div role="status" className="mt-1 text-xs text-amber-700">{browserBridgeVersion ? "有新版桥接工具可用，请更新并重启。" : "当前桥接工具未上报版本，请下载最新版并重新安装。"} <a className="font-medium underline" href="/BrowserBridge-Windows-Installer-v1.2.5.zip" download>下载最新版</a></div>}
+            </div> : <div className="mb-3 flex flex-wrap items-center justify-end gap-2"><Button asChild type="button" variant="outline" size="sm" className="h-8"><a href="/BrowserBridge-Windows-Installer-v1.2.5.zip" download title="下载桥接工具" aria-label="下载桥接工具"><Download aria-hidden="true" />下载桥接工具</a></Button><Button type="button" variant="outline" size="sm" className="h-8" onClick={() => setBrowserBridgeInstallOpen(true)}>查看安装说明</Button></div>}
             <div className="grid items-end gap-3 lg:grid-cols-[minmax(0,0.65fr)_minmax(160px,1fr)_minmax(190px,auto)]">
               <div className="min-w-0"><div className="text-xs text-muted-foreground">项目地址</div><div className="relative mt-1"><code className="block min-h-8 break-all rounded border border-zinc-200 bg-white py-1.5 pl-2 pr-10 text-xs">{browserBridgeAppUrl || "正在获取项目地址…"}</code><Button type="button" variant="ghost" size="icon" className="absolute right-1 top-1/2 size-7 -translate-y-1/2" disabled={!browserBridgeAppUrl} title={browserBridgeCopied === "url" ? "已复制" : "复制项目地址"} aria-label={browserBridgeCopied === "url" ? "已复制项目地址" : "复制项目地址"} onClick={() => void copyBrowserBridgeValue("url", browserBridgeAppUrl)}>{browserBridgeCopied === "url" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}</Button></div></div>
               <div className="min-w-0"><div className="text-xs text-muted-foreground">配对码</div><div className="relative mt-1"><code className="block min-h-8 break-all rounded border border-zinc-200 bg-white py-1.5 pl-2 pr-20 text-xs">{browserBridgeConnected ? "已连接，无需配对码" : browserBridgePairingCode || (browserBridgePairingError ? "生成失败" : "正在生成配对码…")}</code><Button type="button" variant="ghost" size="icon" className="absolute right-9 top-1/2 size-7 -translate-y-1/2" disabled={!browserBridgePairingCode || browserBridgeConnected} title={browserBridgeCopied === "pairing" ? "已复制" : "复制配对码"} aria-label={browserBridgeCopied === "pairing" ? "已复制配对码" : "复制配对码"} onClick={() => void copyBrowserBridgeValue("pairing", browserBridgePairingCode)}>{browserBridgeCopied === "pairing" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}</Button><Button type="button" variant="ghost" size="icon" className="absolute right-1 top-1/2 size-7 -translate-y-1/2" disabled={browserBridgeConnected} title="重新生成配对码" aria-label="重新生成配对码" onClick={() => void createBrowserPairing()}><RefreshCw aria-hidden="true" /></Button></div></div>
@@ -2247,6 +2194,8 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
             const isMysql = server.id === "mysql";
             const isPlaywright = server.id === "playwright";
             const localMcpInstalled = Boolean(localStatus?.installed || localStatus?.connected);
+            const installSourceDisplay = localStatus?.installSource || (localStatus?.installed ? localStatus.packageName : "");
+            const canViewLocalMcpTools = Boolean(localStatus?.configured && (!isPreset || localMcpInstalled));
             const bridgeInstallVersionComparison = compareVersions(browserBridgeVersion, "2.0.6");
             const bridgeSupportsLocalInstall = browserBridgeConnected && bridgeInstallVersionComparison !== null && bridgeInstallVersionComparison >= 0;
             const bridgeUninstallVersionComparison = compareVersions(browserBridgeVersion, "2.0.9");
@@ -2256,7 +2205,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
                 <div className="external-mcp-server-title">
                   <div className="mcp-tool-card-title-row"><strong>{server.name}</strong></div>
                   <small>{server.description}{localStatus?.error ? ` · ${localStatus.error}` : ""}</small>
-                  {localStatus?.installSource && <small className="mcp-install-source">安装来源：<code title={localStatus.installSource}>{localStatus.installSource}</code></small>}
+                  {installSourceDisplay && <small className="mcp-install-source">安装来源：<code title={installSourceDisplay}>{installSourceDisplay}</code></small>}
                   {localStatus?.installed === true && localStatus.installDirectory && <small className="mcp-install-source">安装目录：<code title={localStatus.installDirectory}>{localStatus.installDirectory}</code></small>}
                   {mcpUninstallErrors[server.id] && <small role="alert" className="text-red-700">{mcpUninstallErrors[server.id]}</small>}
                   {isMysql && mysqlMcpInstallError && <small role="alert" className="text-red-700">{mysqlMcpInstallError}</small>}
@@ -2271,7 +2220,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
                 </div>
               </div>
               <div className="mcp-tool-card-bottom flex items-end justify-between gap-3">
-                {(!isPreset || localMcpInstalled) ? <Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => void openInternalMcpTools(server)}>查看工具</Button> : <span />}
+                {canViewLocalMcpTools ? <Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => void openInternalMcpTools(server)}>查看工具</Button> : <span />}
                 <div className="flex items-center gap-2">
                   {isMysql && !localMcpInstalled && <Button type="button" variant="outline" size="sm" disabled={!bridgeSupportsLocalInstall || mysqlMcpInstalling} title={!bridgeSupportsLocalInstall ? "请更新并连接 BrowserBridge 2.0.6 或更新版本" : undefined} onClick={() => void installMysqlMcp()}>{mysqlMcpInstalling ? "安装中…" : "安装到本地"}</Button>}
                   {isPlaywright && !localMcpInstalled && <Button type="button" variant="outline" size="sm" disabled={!bridgeSupportsLocalInstall || playwrightMcpInstalling} title={!bridgeSupportsLocalInstall ? "请更新并连接 BrowserBridge 2.0.6 或更新版本" : undefined} onClick={() => void installPlaywrightMcp()}>{playwrightMcpInstalling ? "安装中…" : "安装到本地"}</Button>}
@@ -2286,15 +2235,35 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
           })}</div> : <div className="mcp-tools-state">{internalMcpFetching ? "正在加载本地 MCP…" : "还没有本地 MCP，请点击“添加本地 MCP”配置。"}</div>}
         </div>}
         {mcpManagerCategory === "external" && <div role="tabpanel" aria-label="远程工具">
-        <div className="external-mcp-toolbar"><span>未标记只读的工具需要你手动授权；声明为有破坏性的工具仍不可用。</span><Button type="button" variant="outline" size="sm" onClick={openExternalMcpEditor}><Plus aria-hidden="true" />添加远程 MCP</Button></div>
+        <div className="external-mcp-toolbar"><span>未标记只读的工具需要你手动授权；声明为有破坏性的工具仍不可用。</span><Button type="button" variant="outline" size="sm" onClick={() => openExternalMcpEditor()}><Plus aria-hidden="true" />添加远程 MCP</Button></div>
         {externalMcpError && <div role="alert" className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{externalMcpError}</div>}
-        {otherMcpServers.length ? <div className="mcp-tools-list grid grid-cols-1 gap-3 sm:grid-cols-2">{otherMcpServers.map((server) => <Card className="mcp-tool-card external-mcp-card" key={server.id}>
-          <div className="mcp-tool-card-heading"><div className="external-mcp-server-title"><strong>{server.name}</strong><small>{server.transport === "stdio" ? server.hasEnv ? "本地命令 · 已配置环境变量" : "本地 stdio" : server.hasToken ? "已配置认证" : "未配置认证"}</small></div><div className="external-mcp-server-actions"><Switch checked={server.enabled} aria-label={`${server.enabled ? "禁用" : "启用"}服务器 ${server.name}`} title={server.enabled ? "服务器已启用" : "服务器已禁用"} disabled={externalMcpUpdating === server.id} onCheckedChange={() => void toggleExternalMcpServer(server)} /><Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground hover:bg-red-50 hover:text-red-600" title={`删除 ${server.name}`} aria-label={`删除 ${server.name}`} onClick={() => void deleteExternalMcpServer(server)}><Trash2 aria-hidden="true" /></Button></div></div>
-          <code>{server.transport === "stdio" ? [server.command, ...server.args].join(" ") : server.url}</code>{server.transport === "stdio" && server.cwd && <small>工作目录：{server.cwd}</small>}<div className="flex items-center justify-between gap-2"><Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => { if (externalMcpExpandedId === server.id) setExternalMcpExpandedId(""); else { setExternalMcpExpandedId(server.id); if (!externalMcpTools[server.id]) void loadExternalMcpTools(server); } }}>{externalMcpExpandedId === server.id ? "收起工具" : "查看工具"}</Button>{server.transport === "http" && <Button type="button" variant="ghost" size="sm" className="h-7 justify-end px-0 text-[11px]" onClick={() => openExternalMcpEditor(server)}>修改配置</Button>}</div>
-          {externalMcpExpandedId === server.id && <div className="external-mcp-tool-list">{externalMcpLoading === server.id ? <small>正在读取工具…</small> : (externalMcpTools[server.id] || []).length ? externalMcpTools[server.id].map((tool) => <div className="external-mcp-tool" key={tool.name}><div><strong>{tool.title || tool.name}</strong><small>{tool.destructive ? "服务器标记为有破坏性，已禁止" : tool.readOnly ? tool.description || tool.name : tool.manuallyAllowed ? `已手动授权 · ${tool.description || tool.name}` : `未标记为只读 · ${tool.description || tool.name}`}</small></div>{tool.canEnable ? <Switch checked={tool.enabled} aria-label={`${tool.enabled ? "禁用" : tool.readOnly ? "启用" : "手动授权并启用"}${tool.title || tool.name}`} title={tool.readOnly ? (tool.enabled ? "禁用工具" : "启用工具") : (tool.enabled ? "撤销授权并禁用" : "手动授权并启用")} disabled={externalMcpUpdating === server.id + ":" + tool.name} onCheckedChange={() => void toggleExternalMcpTool(server, tool)} /> : <span className="external-mcp-unsafe">不可用</span>}</div>) : <small>服务器没有提供工具。</small>}</div>}
-        </Card>)}</div> : <div className="mcp-tools-state">还没有远程工具，点击“添加远程 MCP”开始配置。</div>}
+        {otherMcpServers.length ? <div className="mcp-tools-list grid grid-cols-1 gap-3 sm:grid-cols-2">{otherMcpServers.map((server) => {
+          const preset = server.builtInPresetId ? builtInRemoteMcpCatalog.find((item) => item.id === server.builtInPresetId) : undefined;
+          const presetConfigured = server.builtInConfigured ?? true;
+          const missingRequiredKey = Boolean(preset?.requiresApiKey && !server.hasToken);
+          const statusText = preset
+            ? !presetConfigured ? "内置远程工具 · 尚未配置" : server.hasToken ? "已配置 API Key" : preset.requiresApiKey ? "需要配置 API Key" : "建议配置 API Key"
+            : server.transport === "stdio" ? server.hasEnv ? "本地命令 · 已配置环境变量" : "本地 stdio" : server.hasToken ? "已配置认证" : "未配置认证";
+          return <Card className="mcp-tool-card external-mcp-card" key={server.id}>
+            <div className="mcp-tool-card-heading has-actions">
+              <div className="external-mcp-server-title"><div className="mcp-tool-card-title-row"><strong>{server.name}</strong></div><small>{statusText}</small></div>
+              <div className="mcp-tool-card-actions">
+                <Switch checked={preset ? presetConfigured && server.enabled : server.enabled} aria-label={`${server.enabled ? "禁用" : "启用"}服务器 ${server.name}`} title={server.enabled ? "服务器已启用" : "服务器已禁用"} disabled={!presetConfigured || missingRequiredKey || externalMcpUpdating === server.id} onCheckedChange={() => void toggleExternalMcpServer(server)} />
+                {!preset && <Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground hover:bg-red-50 hover:text-red-600" title={`删除 ${server.name}`} aria-label={`删除 ${server.name}`} onClick={() => void deleteExternalMcpServer(server)}><Trash2 aria-hidden="true" /></Button>}
+              </div>
+            </div>
+            <code>{server.transport === "stdio" ? [server.command, ...server.args].join(" ") : server.url}</code>
+            {preset && <small>{preset.description}</small>}
+            {server.transport === "stdio" && server.cwd && <small>工作目录：{server.cwd}</small>}
+            {preset && !server.hasToken && <small className={preset.requiresApiKey ? "text-amber-700" : "text-muted-foreground"}>{preset.keyNotice}</small>}
+            <div className="mcp-tool-card-bottom flex items-end justify-between gap-3">
+              {(!preset || presetConfigured) ? <Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => void openInternalMcpTools({ id: server.id, name: server.name, description: preset?.description || server.url, url: server.url }, server)}>查看工具</Button> : <span />}
+              {(preset || server.transport === "http") && <div><Button type="button" variant="outline" size="sm" onClick={() => openExternalMcpEditor(server)}>{preset ? presetConfigured ? "修改配置" : "配置" : "修改配置"}</Button></div>}
+            </div>
+          </Card>;
+        })}</div> : <div className="mcp-tools-state">还没有远程工具，点击“添加远程 MCP”开始配置。</div>}
         </div>}
-        </div>
+      </div>
       </div>
       </div>
       </div>
@@ -2375,41 +2344,26 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
         <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setVideoMcpEditorOpen(false)}>取消</Button><Button type="button" disabled={videoMcpSaving || !videoMcpWorkspaceId.trim() || (!videoMcpHasKey && !videoMcpApiKey.trim()) || !Number.isInteger(Number(videoMcpDuration)) || Number(videoMcpDuration) < 2 || Number(videoMcpDuration) > 30} onClick={() => void saveVideoGenerationMcp()}>{videoMcpSaving ? "保存中…" : "保存并启用"}</Button></div>
       </DialogContent>
     </Dialog>
-    <Dialog open={webSearchEditorOpen} onOpenChange={setWebSearchEditorOpen}>
-      <DialogContent className="max-h-[90vh] max-w-[500px] overflow-y-auto border-zinc-200 bg-white p-6 text-zinc-900 shadow-2xl sm:max-w-[500px]" showCloseButton={false}>
-        <div className="flex items-start justify-between gap-4">
-          <DialogHeader className="space-y-1 text-left"><DialogTitle className="text-xl font-semibold tracking-tight">配置{webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.name}网页搜索</DialogTitle><DialogDescription>使用服务商官方托管的 Streamable HTTP MCP 搜索服务。</DialogDescription></DialogHeader>
-          <DialogClose asChild><Button type="button" variant="ghost" size="icon" className="-mr-2 -mt-2 size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none outline-none hover:bg-transparent hover:text-zinc-900 focus-visible:border-transparent focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0" aria-label="关闭"><X className="size-4" /></Button></DialogClose>
-        </div>
-        <div className="space-y-4">
-          <div className="space-y-2"><Label htmlFor="web-search-api-type">API 类型</Label><Input id="web-search-api-type" value="Streamable HTTP MCP" readOnly /></div>
-          <div className="space-y-2"><Label htmlFor="web-search-endpoint">MCP 地址（官方地址）</Label><Input id="web-search-endpoint" value={webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.endpoint || ""} readOnly /></div>
-          <div className="space-y-2"><Label htmlFor="web-search-key">{webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.requiresApiKey ? `${webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.name} API Key` : "API Key（可选）"}</Label><Input id="web-search-key" type="password" autoComplete="new-password" value={webSearchApiKey} onChange={(event) => setWebSearchApiKey(event.target.value)} placeholder={webSearchHasKey ? "留空以保留已保存的 Key" : webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.requiresApiKey ? `输入 ${webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.name} API Key` : "可留空使用服务商匿名额度"} />{webSearchHasKey && <p className="text-xs text-muted-foreground">已保存的 Key 不会回传；留空即可保留。</p>}{webSearchProvider === "firecrawl" && !webSearchHasKey && <p className="text-xs text-amber-700">当前 Firecrawl 服务拒绝了免 Key 搜索请求，请填写 API Key 后使用。</p>}{webSearchProvider !== "tavily" && webSearchProvider !== "firecrawl" && <p className="text-xs text-muted-foreground">免 Key 使用有额度限制；填写 API Key 后通过 Bearer Token 认证。</p>}</div>
-          {webSearchFeedback && <div role="status" className={`rounded-md border px-3 py-2 text-xs ${webSearchFeedback.includes("失败") || webSearchFeedback.includes("请") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{webSearchFeedback}</div>}
-        </div>
-        <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setWebSearchEditorOpen(false)}>取消</Button><Button type="button" disabled={webSearchSaving || (Boolean(webSearchProviderCatalog.find((provider) => provider.id === webSearchProvider)?.requiresApiKey) && !webSearchHasKey && !webSearchApiKey.trim())} onClick={() => void saveWebSearchMcp()}>{webSearchSaving ? "保存中…" : "保存并使用"}</Button></div>
-      </DialogContent>
-    </Dialog>
     <Dialog open={externalMcpEditorOpen} onOpenChange={setExternalMcpEditorOpen}>
       <DialogContent className="max-h-[90vh] max-w-[500px] overflow-y-auto border-zinc-200 bg-white p-6 text-zinc-900 shadow-2xl sm:max-w-[500px]" showCloseButton={false}>
         <div className="flex items-start justify-between gap-4">
           <DialogHeader className="space-y-1 text-left">
-            <DialogTitle className="text-xl font-semibold tracking-tight">{externalMcpEditingServer ? "修改远程 MCP 配置" : "添加远程 MCP"}</DialogTitle>
-            <DialogDescription>{externalMcpEditingServer ? "修改远程 MCP 地址或认证信息。" : externalMcpRuntime === "desktop" ? "连接远程 HTTP 服务，或启动本机 MCP 命令。" : "连接远程 Streamable HTTP MCP 服务。"}</DialogDescription>
+            <DialogTitle className="text-xl font-semibold tracking-tight">{externalMcpPresetId ? externalMcpEditingServer ? `修改${builtInRemoteMcpCatalog.find((item) => item.id === externalMcpPresetId)?.name}配置` : `配置${builtInRemoteMcpCatalog.find((item) => item.id === externalMcpPresetId)?.name}` : externalMcpEditingServer ? "修改远程 MCP 配置" : "添加远程 MCP"}</DialogTitle>
+            <DialogDescription>{externalMcpPresetId ? builtInRemoteMcpCatalog.find((item) => item.id === externalMcpPresetId)?.keyNotice : externalMcpEditingServer ? "修改远程 MCP 地址或认证信息。" : externalMcpRuntime === "desktop" ? "连接远程 HTTP 服务，或启动本机 MCP 命令。" : "连接远程 Streamable HTTP MCP 服务。"}</DialogDescription>
           </DialogHeader>
           <DialogClose asChild><Button type="button" variant="ghost" size="icon" className="-mr-2 -mt-2 size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none outline-none hover:bg-transparent hover:text-zinc-900 focus-visible:border-transparent focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0" aria-label="关闭"><X className="size-4" /></Button></DialogClose>
         </div>
         <div className="space-y-4">
-          {externalMcpRuntime === "desktop" && !externalMcpEditingServer && <div className="space-y-2"><Label>MCP 类型</Label><div className="flex gap-2"><Button type="button" variant={externalMcpTransport === "http" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("http"); setExternalMcpTested(false); }}>远程 HTTP</Button><Button type="button" variant={externalMcpTransport === "stdio" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("stdio"); setExternalMcpTested(false); }}>本地命令</Button></div></div>}
-          <div className="space-y-2"><Label htmlFor="external-mcp-name">名称</Label><Input id="external-mcp-name" value={externalMcpName} onChange={(event) => { setExternalMcpName(event.target.value); setExternalMcpTested(false); }} placeholder="例如：项目文档 MCP" /></div>
-          {externalMcpTransport === "http" ? <><div className="space-y-2"><Label htmlFor="external-mcp-url">服务器 URL</Label><Input id="external-mcp-url" value={externalMcpUrl} onChange={(event) => { setExternalMcpUrl(event.target.value); setExternalMcpTested(false); }} placeholder="https://example.com/mcp" /></div><div className="space-y-2"><Label htmlFor="external-mcp-token">Bearer Token（可选）</Label><Input id="external-mcp-token" type="password" autoComplete="new-password" value={externalMcpToken} onChange={(event) => { setExternalMcpToken(event.target.value); setExternalMcpTested(false); }} placeholder={externalMcpEditingServer?.hasToken ? "留空以保留已保存的 Token" : "需要认证时填写"} />{externalMcpEditingServer?.hasToken && <p className="text-xs text-muted-foreground">已保存的 Token 不会回传；留空即可保留，输入新 Token 可替换。</p>}</div></> : <><div className="space-y-2"><Label htmlFor="external-mcp-command">启动命令</Label><Input id="external-mcp-command" value={externalMcpCommand} onChange={(event) => { setExternalMcpCommand(event.target.value); setExternalMcpTested(false); }} placeholder="例如：npx" /></div><div className="space-y-2"><Label htmlFor="external-mcp-args">命令参数（JSON 数组）</Label><Textarea id="external-mcp-args" value={externalMcpArgsJson} onChange={(event) => { setExternalMcpArgsJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'["-y", "@example/mcp-server"]'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-env">环境变量（JSON 对象，可选）</Label><Textarea id="external-mcp-env" value={externalMcpEnvJson} onChange={(event) => { setExternalMcpEnvJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'{"API_KEY": "..."}'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-cwd">工作目录（可选）</Label><Input id="external-mcp-cwd" value={externalMcpCwd} onChange={(event) => { setExternalMcpCwd(event.target.value); setExternalMcpTested(false); }} placeholder="/path/to/project" /></div><p className="text-xs leading-relaxed text-amber-700">命令会在这台电脑上以当前用户权限运行。只配置并启动你信任的 MCP 程序。</p></>}
+          {externalMcpRuntime === "desktop" && !externalMcpEditingServer && !externalMcpPresetId && <div className="space-y-2"><Label>MCP 类型</Label><div className="flex gap-2"><Button type="button" variant={externalMcpTransport === "http" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("http"); setExternalMcpTested(false); }}>远程 HTTP</Button><Button type="button" variant={externalMcpTransport === "stdio" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("stdio"); setExternalMcpTested(false); }}>本地命令</Button></div></div>}
+          <div className="space-y-2"><Label htmlFor="external-mcp-name">名称</Label><Input id="external-mcp-name" value={externalMcpName} readOnly={Boolean(externalMcpPresetId)} onChange={(event) => { setExternalMcpName(event.target.value); setExternalMcpTested(false); }} placeholder="例如：项目文档 MCP" /></div>
+          {externalMcpTransport === "http" ? <><div className="space-y-2"><Label htmlFor="external-mcp-url">服务器 URL</Label><Input id="external-mcp-url" value={externalMcpUrl} readOnly={Boolean(externalMcpPresetId)} onChange={(event) => { setExternalMcpUrl(event.target.value); setExternalMcpTested(false); }} placeholder="https://example.com/mcp" /></div><div className="space-y-2"><Label htmlFor="external-mcp-token">{externalMcpPresetId ? "API Key（通过 Bearer Token 发送）" : "Bearer Token（可选）"}</Label><Input id="external-mcp-token" type="password" autoComplete="new-password" value={externalMcpToken} onChange={(event) => { setExternalMcpToken(event.target.value); setExternalMcpTested(false); }} placeholder={externalMcpEditingServer?.hasToken ? "留空以保留已保存的 API Key / Token" : externalMcpPresetId === "tavily" ? "必须填写 Tavily API Key" : externalMcpPresetId === "context7" ? "建议填写 Context7 API Key" : "需要认证时填写"} />{externalMcpEditingServer?.hasToken && <p className="text-xs text-muted-foreground">已保存的凭据不会回传；留空即可保留，输入新凭据可替换。</p>}{externalMcpPresetId && <><p className={`text-xs ${externalMcpPresetId === "tavily" ? "text-amber-700" : "text-muted-foreground"}`}>{builtInRemoteMcpCatalog.find((item) => item.id === externalMcpPresetId)?.keyNotice}</p><a className="inline-block text-xs font-medium text-blue-600 underline underline-offset-2 hover:text-blue-700" href={builtInRemoteMcpCatalog.find((item) => item.id === externalMcpPresetId)?.apiKeyUrl} target="_blank" rel="noreferrer">前往获取 {builtInRemoteMcpCatalog.find((item) => item.id === externalMcpPresetId)?.name} API Key ↗</a></>}</div></> : <><div className="space-y-2"><Label htmlFor="external-mcp-command">启动命令</Label><Input id="external-mcp-command" value={externalMcpCommand} onChange={(event) => { setExternalMcpCommand(event.target.value); setExternalMcpTested(false); }} placeholder="例如：npx" /></div><div className="space-y-2"><Label htmlFor="external-mcp-args">命令参数（JSON 数组）</Label><Textarea id="external-mcp-args" value={externalMcpArgsJson} onChange={(event) => { setExternalMcpArgsJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'["-y", "@example/mcp-server"]'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-env">环境变量（JSON 对象，可选）</Label><Textarea id="external-mcp-env" value={externalMcpEnvJson} onChange={(event) => { setExternalMcpEnvJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'{"API_KEY": "..."}'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-cwd">工作目录（可选）</Label><Input id="external-mcp-cwd" value={externalMcpCwd} onChange={(event) => { setExternalMcpCwd(event.target.value); setExternalMcpTested(false); }} placeholder="/path/to/project" /></div><p className="text-xs leading-relaxed text-amber-700">命令会在这台电脑上以当前用户权限运行。只配置并启动你信任的 MCP 程序。</p></>}
           <p className="text-xs leading-relaxed text-muted-foreground">凭据保存在当前用户配置中。未标记只读的工具需要手动授权；声明为有破坏性的工具仍不可用。</p>
           {externalMcpError && <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{externalMcpError}</div>}
           {externalMcpTested && <div className="space-y-1 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"><strong>连接成功</strong><p>{externalMcpPreview.filter((tool) => tool.readOnly).length} 个只读工具可直接启用</p>{externalMcpPreview.some((tool) => !tool.readOnly) && <small className="text-amber-700">{externalMcpPreview.filter((tool) => !tool.readOnly && tool.canEnable).length} 个未标记只读的工具可在添加后手动授权；{externalMcpPreview.filter((tool) => tool.destructive).length} 个声明为有破坏性的工具不可用。</small>}</div>}
         </div>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" disabled={externalMcpTesting || (externalMcpTransport === "stdio" ? !externalMcpCommand.trim() : !externalMcpUrl.trim())} onClick={() => void testExternalMcp()}>{externalMcpTesting ? "测试中…" : externalMcpTransport === "stdio" ? "测试命令" : "测试连接"}</Button>
-          <Button type="button" disabled={externalMcpSaving || !externalMcpTested || !externalMcpName.trim()} onClick={() => void saveExternalMcp()}>{externalMcpSaving ? externalMcpEditingServer ? "保存中…" : "添加中…" : externalMcpEditingServer ? "保存修改" : "添加远程 MCP"}</Button>
+          <Button type="button" variant="outline" disabled={externalMcpTesting || (externalMcpTransport === "stdio" ? !externalMcpCommand.trim() : !externalMcpUrl.trim() || externalMcpPresetId === "tavily" && !externalMcpToken.trim() && !externalMcpEditingServer?.hasToken)} onClick={() => void testExternalMcp()}>{externalMcpTesting ? "测试中…" : externalMcpTransport === "stdio" ? "测试命令" : "测试连接"}</Button>
+          <Button type="button" disabled={externalMcpSaving || !externalMcpTested || !externalMcpName.trim()} onClick={() => void saveExternalMcp()}>{externalMcpSaving ? externalMcpEditingServer ? "保存中…" : "保存中…" : externalMcpPresetId ? externalMcpEditingServer ? "保存修改" : "保存配置" : externalMcpEditingServer ? "保存修改" : "添加远程 MCP"}</Button>
         </div>
       </DialogContent>
     </Dialog>

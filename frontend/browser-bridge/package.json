@@ -1,6 +1,6 @@
 {
   "name": "little-sunshine-browser-bridge",
-  "version": "2.0.16",
+  "version": "2.0.19",
   "private": true,
   "type": "module",
   "scripts": {

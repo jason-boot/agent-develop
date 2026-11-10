@@ -156,21 +156,22 @@ html,body{font-size:14px}
 .sidebar{background:#f7f7f7;border-right-color:#f0f0f0}
 .main-area{display:flex;flex-direction:column;background:#fff}
 .main-area{position:relative}
-.mcp-tools-page{position:fixed;z-index:30;inset:0 0 0 238px;display:grid;grid-template-columns:minmax(0,1fr);overflow:hidden;pointer-events:none;background:transparent}
-.mcp-tools-page-content{grid-column:1;width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;padding:24px 0;border:0;border-radius:0;pointer-events:auto;background:#fff}
-.mcp-tools-page-inner{width:min(920px,calc(100% - 48px));height:100%;min-width:0;margin:0 auto;display:flex;flex-direction:column}
-.mcp-tools-list{overflow:auto;display:grid;gap:10px;padding:1px 3px 2px 1px}
-.external-mcp-tab{min-height:320px;display:flex;flex:1;overflow:hidden}
-.mcp-manager-layout{display:flex;flex:1;min-height:0;gap:16px;overflow:hidden}
+.mcp-tools-page{position:fixed;z-index:30;inset:0 0 0 238px;display:block;overflow-x:hidden;overflow-y:auto;pointer-events:none;background:transparent}
+.mcp-tools-page-content{width:100%;min-height:100%;display:flex;flex-direction:column;overflow:visible;padding:24px 0;border:0;border-radius:0;pointer-events:auto;background:#fff}
+.mcp-tools-page-inner{width:min(920px,calc(100% - 48px));min-height:calc(100vh - 48px);min-width:0;margin:0 auto;display:flex;flex-direction:column}
+.mcp-tools-list{display:grid;gap:10px;padding:1px 3px 2px 1px}
+.external-mcp-tab{min-height:calc(100vh - 48px);display:flex;overflow:visible}
+.mcp-manager-layout{display:flex;width:100%;min-height:100%;gap:16px;overflow:visible}
 .mcp-category-sidebar{display:flex;flex:0 0 150px;flex-direction:column;gap:4px;padding:2px 12px 2px 0;border-right:1px solid #e8e7ed}
 .mcp-category-button{width:100%;justify-content:flex-start;white-space:normal;text-align:left}
-.mcp-category-content{flex:1;min-width:0;min-height:0;overflow:auto;padding:1px 3px 2px 0}
-.mcp-category-content>[role=tabpanel]{min-height:100%}
+.mcp-category-content{width:100%;flex:1;min-width:0;min-height:0;overflow:visible;padding:1px 3px 2px 0}
+.mcp-category-content>[role=tabpanel]{width:100%;min-height:100%}
+.mcp-category-content .mcp-tools-list{width:100%;grid-template-columns:repeat(2,minmax(0,1fr))}
+.mcp-category-content .mcp-tools-list>.mcp-tool-card{width:100%;min-width:0}
 .external-mcp-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px;color:#898a93;font-size:11px}
 .external-mcp-toolbar button{flex:0 0 auto}
 .external-mcp-server-title{min-width:0;display:flex;flex-direction:column;gap:4px}
 .external-mcp-server-title small{color:#999aa2;font-size:10px;font-weight:400}
-.external-mcp-server-actions{display:flex;align-items:center;gap:11px}
 .external-mcp-card>code{overflow-wrap:anywhere;font-size:10px}
 .external-mcp-show-tools{align-self:flex-start;margin-top:10px;color:#6256b2;text-align:left;font-size:11px}
 .external-mcp-tool-list{display:grid;gap:8px;margin-top:11px;padding-top:10px;border-top:1px solid #efeff2}
@@ -181,6 +182,7 @@ html,body{font-size:14px}
 .external-mcp-tool small{color:#93949c;font-size:10px;line-height:1.4}
 .external-mcp-unsafe{color:#ad6b45;font-size:10px;white-space:nowrap}
 .mcp-tool-card{position:relative;padding:13px 14px;border:1px solid #e9e8ee;border-radius:9px;background:#fff}
+.mcp-tools-page .mcp-tool-card{min-height:144px}
 .mcp-tool-card.external-mcp-card{display:flex;flex-direction:column}
 .mcp-tool-card-bottom{margin-top:auto;padding-top:12px}
 .mcp-tool-card-bottom>div:last-child{margin-right:-8px}
@@ -246,6 +248,7 @@ html,body{font-size:14px}
 .disclaimer{font-size:10px;margin-top:9px}
 .error-banner{font-size:12px}
 @media(max-width:800px){.workspace{height:100vh;min-height:0}.welcome-center h1{font-size:24px}.welcome-center .suggestion-grid{grid-template-columns:1fr}.welcome-center{transform:translateY(-97px)}.composer-area{padding-left:16px;padding-right:16px}.chat-content{padding-left:16px;padding-right:16px}.mcp-tools-page-content{padding:17px 0}.mcp-tools-page-inner{width:min(920px,calc(100% - 32px))}.mcp-category-sidebar{flex-basis:116px;padding-right:8px}.mcp-manager-layout{gap:10px}}
+@media(max-width:639px){.mcp-category-content .mcp-tools-list{grid-template-columns:minmax(0,1fr)}}
 
 /* Keep the app viewport fixed; only the message list scrolls after chat starts. */
 html,body{height:100%;overflow:hidden}

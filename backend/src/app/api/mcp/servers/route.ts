@@ -5,6 +5,7 @@ import { currentBrowserBridge, type BrowserTool } from "@/lib/browser-bridge";
 import { callBrowserBridgeCommand } from "@/lib/browser-bridge";
 import { internalMcpCatalog } from "@/mcp-modules";
 import { readUserAppSetting, writeUserAppSetting } from "@/lib/local-db";
+import { getLegacyWebSearchProviderCredentials } from "@/lib/web-search-mcp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -75,6 +76,17 @@ async function inspect(server: Pick<ExternalMcpServer, "transport" | "url" | "to
 
 async function handlerGET(request: Request) {
   try {
+    const legacyTavily = await getLegacyWebSearchProviderCredentials("tavily");
+    if (legacyTavily.apiKey) {
+      const tavilyUrl = "https://mcp.tavily.com/mcp";
+      const existingTavily = (await listExternalMcpServers()).find((server) => server.transport === "http" && server.url.replace(/\/+$/, "") === tavilyUrl);
+      if (!existingTavily) {
+        const server = await saveExternalMcpServer({ name: "Tavily", transport: "http", url: tavilyUrl, token: legacyTavily.apiKey });
+        if (!legacyTavily.enabled) await updateExternalMcpServer(server.id, { enabled: false });
+      } else if (!existingTavily.token) {
+        await saveExternalMcpServer({ id: existingTavily.id, name: existingTavily.name, transport: "http", url: existingTavily.url, token: legacyTavily.apiKey });
+      }
+    }
     const servers = await ensureInternalMcpServers(internalMcpCatalog);
     return Response.json({ runtime: isDesktopMcpRuntime() ? "desktop" : "web", servers: servers.filter((server) => server.transport !== "stdio" || isDesktopMcpRuntime()).map(publicServer) });
   } catch (error) {

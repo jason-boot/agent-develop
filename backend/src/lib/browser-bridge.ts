@@ -3,7 +3,7 @@ import { currentUserId, findBrowserBridgeSession, findUserById, readUserAppSetti
 
 export type BrowserTool = { serverId: string; name: string; title?: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean } };
 export type BrowserMcpStatus = { id: string; configured: boolean; connected: boolean; toolCount: number; installSource?: string; installDirectory?: string; packageName?: string; installed?: boolean; installedVersion?: string; error?: string };
-export const LATEST_BROWSER_BRIDGE_VERSION = "2.0.16";
+export const LATEST_BROWSER_BRIDGE_VERSION = "2.0.19";
 type Pending = { name: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 type Bridge = { userId: number; token: string; tools: BrowserTool[]; mcpServers: BrowserMcpStatus[]; installDirectory: string; version: string; lastSeen: number; pending: Map<string, Pending> };
 type Store = { pairings: Map<string, { userId: number; expiresAt: number }>; bridges: Map<string, Bridge> };

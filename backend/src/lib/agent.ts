@@ -4,7 +4,6 @@ import { isDesktopMcpRuntime, listExternalMcpServers } from "@/lib/external-mcp-
 import { ModelServiceError, requestImageGeneration, requestModelAgentTurn, type AgentImageInput, type AgentMessage, type AgentToolCall, type AgentToolDefinition, type ModelConfig } from "@/lib/model-config";
 import { callImageGenerationMcpTool, getImageGenerationMcpConfig, imageGenerationMcpTool } from "@/lib/image-generation-mcp";
 import { createVideoGenerationTask, getVideoGenerationConfig, videoGenerationMcpTool } from "@/lib/video-generation-mcp";
-import { getActiveWebSearchMcpConfig, isWebSearchToolName, webSearchProviderCatalog } from "@/lib/web-search-mcp";
 import { callBrowserTool, currentBrowserBridge } from "@/lib/browser-bridge";
 
 const emptySummary: UsageSummary = {
@@ -80,6 +79,7 @@ function buildSystemPrompt(today: string, codingMode = false) {
 - 本机 MySQL 工具只用于用户明确要求查询本机数据库、SQL 或数据表时；问候、闲聊和一般问题不得调用。
 - 问候、闲聊、解释、写作和一般知识问题，通常直接回答；涉及用户专属、系统内或实时数据的问题，只有在存在相关工具时才调用工具。没有相关工具或工具无法提供答案时，应如实说明，不得猜测数据或声称已查询。
 - 严格遵循工具说明和参数结构。只调用本轮提供且获准使用的工具；不要生成或执行 SQL。工具调用失败时，简洁说明失败情况，不要伪造结果。需要多个工具时，调用完成回答所需的最少工具。
+- 如果本轮提供 Context7 工具，用户询问软件库、框架或 SDK 的用法时优先用它查官方文档；如果提供 Tavily 工具，用户要求搜索网页或核实实时信息时优先用它，并根据搜索结果说明来源。工具未启用或不可用时，不要声称已经检索。
 - 根据工具返回内容准确作答；区分事实、推断和未知信息。保留与用户问题相关的数值、单位、时间范围和精度。
 
 用量查询规则（仅当问题与模型使用记录相关且提供了 query_usage 工具时适用）：
@@ -134,10 +134,9 @@ export async function answerQuestion(
   try {
     const configuredImageMcp = await getImageGenerationMcpConfig();
     const configuredVideoMcp = await getVideoGenerationConfig();
-    const configuredWebSearch = await getActiveWebSearchMcpConfig();
     const legacyImageConfig = configuredImageMcp ? undefined : modelConfig.imageGeneration;
     const imageToolEnabled = Boolean(configuredImageMcp?.enabled || legacyImageConfig);
-    const allowed = new Map<string, { tool: McpListedTool; client?: McpConnection["client"]; remoteName: string; label: string; webSearchProviderId?: string; browserBridge?: boolean; bridgeMcpId?: string }>();
+    const allowed = new Map<string, { tool: McpListedTool; client?: McpConnection["client"]; remoteName: string; label: string; browserBridge?: boolean; bridgeMcpId?: string }>();
     const tools: AgentToolDefinition[] = [];
     const originalProjectFiles = projectFiles ? { ...projectFiles } : undefined;
     if (projectFiles) {
@@ -158,24 +157,6 @@ export async function answerQuestion(
     if (configuredVideoMcp) {
       allowed.set(videoGenerationMcpTool.name, { tool: videoGenerationMcpTool as McpListedTool, remoteName: videoGenerationMcpTool.name, label: "阿里云百炼视频生成" });
       tools.push(videoGenerationMcpTool);
-    }
-    if (configuredWebSearch) {
-      try {
-        const remote = await connectRemoteMcpClient(new URL(configuredWebSearch.endpoint), configuredWebSearch.apiKey || undefined);
-        clients.push(remote);
-        const { tools: remoteTools } = await remote.client.listTools();
-        const providerName = webSearchProviderCatalog[configuredWebSearch.providerId].name;
-        for (const tool of remoteTools.filter((item) => isWebSearchToolName(item.name))) {
-          if (tool.annotations?.destructiveHint === true) continue;
-          const exposedName = `websearch_${tool.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 50)}`;
-          if (allowed.has(exposedName)) continue;
-          allowed.set(exposedName, { tool, client: remote.client, remoteName: tool.name, label: `${providerName} 网页搜索`, webSearchProviderId: configuredWebSearch.providerId });
-          const flatArgsInstruction = configuredWebSearch.providerId === "firecrawl" ? " 参数必须是符合下方结构的扁平对象；直接传 query 等字段，不要再嵌套在 name/arguments 对象中。" : "";
-          tools.push({ name: exposedName, description: `${providerName} 网页搜索：${tool.description || tool.title || tool.name}${flatArgsInstruction}`, inputSchema: tool.inputSchema as Record<string, unknown> });
-        }
-      } catch {
-        // Search service outages should not prevent the assistant from answering other questions.
-      }
     }
     const externalServers = await listExternalMcpServers();
     for (const server of externalServers.filter((item) => item.enabled && item.transport !== "bridge" && item.name !== "内部工具：Playwright MCP" && item.name !== "内部工具：MySQL MCP" && item.name !== "内部工具" && (item.transport !== "stdio" || isDesktopMcpRuntime()))) {
@@ -230,7 +211,7 @@ export async function answerQuestion(
     const messages: AgentMessage[] = [
       {
         role: "system",
-        content: buildSystemPrompt(dayString(new Date()), Boolean(projectFiles)) + (imageToolEnabled ? "\n\n图片生成规则：用户明确要求生成或编辑图片时，调用 generate_image 工具；不要假装已生成。调用成功后再简短说明结果。" : "") + (configuredVideoMcp ? "\n\n视频生成规则：用户明确要求生成视频时，调用 generate_video 工具；不要把静态图片当成视频，也不要假装已生成。工具完成后再简短说明结果。" : "") + (configuredWebSearch ? `\n\n网页搜索规则：用户询问最新动态、当前事实、需要在线核实的信息或明确要求搜索网页时，优先调用当前启用的网页搜索工具。根据搜索结果回答并说明来源，不得编造搜索结果。${configuredWebSearch.providerId === "firecrawl" ? "调用 Firecrawl 工具时，arguments 必须是按工具 schema 填写的扁平参数对象，不要套 {name, arguments} 包装层。" : ""}` : "") + browserInstructions + mysqlInstructions + (browserNavigateEnabled ? "\n\n浏览器操作规则：用户要求打开网址或导航到某个页面时，调用已启用的 Playwright browser_navigate 工具；它会在用户已连接的浏览器标签页中导航。不要声称无法打开网址。" : ""),
+        content: buildSystemPrompt(dayString(new Date()), Boolean(projectFiles)) + (imageToolEnabled ? "\n\n图片生成规则：用户明确要求生成或编辑图片时，调用 generate_image 工具；不要假装已生成。调用成功后再简短说明结果。" : "") + (configuredVideoMcp ? "\n\n视频生成规则：用户明确要求生成视频时，调用 generate_video 工具；不要把静态图片当成视频，也不要假装已生成。工具完成后再简短说明结果。" : "") + browserInstructions + mysqlInstructions + (browserNavigateEnabled ? "\n\n浏览器操作规则：用户要求打开网址或导航到某个页面时，调用已启用的 Playwright browser_navigate 工具；它会在用户已连接的浏览器标签页中导航。不要声称无法打开网址。" : ""),
       },
       ...history.map((message) => ({ role: message.role, content: message.content, ...(message.images?.length ? { images: message.images } : {}) })),
       { role: "user", content: question, ...(images.length ? { images } : {}) },
@@ -352,12 +333,7 @@ export async function answerQuestion(
           output = { path, status: Object.hasOwn(originalProjectFiles || {}, path) ? "updated" : "created", awaitingUserApproval: true };
         } else {
           if (!routedTool.client && !routedTool.browserBridge) throw new Error("MCP 工具客户端不可用。");
-          let toolArguments = call.arguments;
-          if (routedTool.webSearchProviderId === "firecrawl" && routedTool.remoteName === "firecrawl_search" && isObject(toolArguments.arguments)) {
-            // Some model providers copy Firecrawl's documentation envelope into the MCP call.
-            // MCP already supplies the tool name separately, so pass only the nested input.
-            toolArguments = toolArguments.arguments;
-          }
+          const toolArguments = call.arguments;
           try {
             if (routedTool.browserBridge) onStatus?.(routedTool.bridgeMcpId === "mysql" ? "正在查询本机 MySQL…" : routedTool.bridgeMcpId === "playwright" && routedTool.remoteName === "browser_navigate" ? "正在打开已连接浏览器中的网页…" : "正在执行本机 MCP 工具…");
             output = routedTool.browserBridge ? await callBrowserTool(routedTool.bridgeMcpId || "", routedTool.remoteName, toolArguments) : await callMcpTool(routedTool.client!, routedTool.remoteName, toolArguments);
@@ -368,9 +344,6 @@ export async function answerQuestion(
               output = routedTool.bridgeMcpId === "playwright"
                 ? { error: detail, instruction: "请先调用 browser_snapshot 获取当前页面快照，再使用快照中的具体 ref 重试；不要重复刚才失败的 target。" }
                 : { error: detail };
-            } else if (routedTool.webSearchProviderId) {
-              const providerName = webSearchProviderCatalog[routedTool.webSearchProviderId as keyof typeof webSearchProviderCatalog].name;
-              throw new ModelServiceError(`${providerName}搜索失败：${error instanceof Error ? error.message : "MCP 工具调用失败。"}`);
             } else {
               throw error;
             }

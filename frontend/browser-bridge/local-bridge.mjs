@@ -217,14 +217,25 @@ function managedPluginDirectories() {
 }
 
 function managedPluginInfo(directory) {
+  const readJson = (file) => JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+  let rootMetadata = {};
+  let manifest = {};
+  try { rootMetadata = readJson(path.join(directory, 'package.json')); }
+  catch { /* Some existing installs only have the package directory and marker. */ }
+  try { manifest = readJson(path.join(directory, pluginManifestName)); }
+  catch { /* Older plugin directories do not have a BrowserBridge manifest. */ }
+
+  const relativeParts = path.relative(pluginRoot, directory).split(path.sep);
+  const inferredScopedPackage = relativeParts[0]?.startsWith('@') && relativeParts[1]
+    ? `${relativeParts[0]}/${relativeParts[1]}`
+    : '';
+  const dependencyPackage = Object.keys(rootMetadata.dependencies || {}).find((name) => parseNpmPackageSpec(name));
+  const packageName = [manifest.packageName, dependencyPackage, inferredScopedPackage]
+    .find((name) => typeof name === 'string' && parseNpmPackageSpec(name));
+  if (!packageName) return null;
+
   try {
-    const rootMetadata = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8'));
-    let manifest = {};
-    try { manifest = JSON.parse(readFileSync(path.join(directory, pluginManifestName), 'utf8')); }
-    catch { /* Older plugin directories do not have a BrowserBridge manifest. */ }
-    const packageName = manifest.packageName || Object.keys(rootMetadata.dependencies || {})[0];
-    if (typeof packageName !== 'string' || !parseNpmPackageSpec(packageName)) return null;
-    const packageMetadata = JSON.parse(readFileSync(path.join(directory, 'node_modules', ...packageName.split('/'), 'package.json'), 'utf8'));
+    const packageMetadata = readJson(path.join(directory, 'node_modules', ...packageName.split('/'), 'package.json'));
     return { packageName, manifest, installedVersion: typeof packageMetadata.version === 'string' ? packageMetadata.version : undefined };
   } catch { return null; }
 }
@@ -298,8 +309,9 @@ function detectManagedNpmInstallation(serverId, config) {
   const entries = managedPluginDirectories();
   const configDirectory = config?.installDirectory ? path.resolve(config.installDirectory) : '';
   const match = entries.find(({ directory, info }) => {
-    if (configDirectory) return path.resolve(directory) === configDirectory && (!config.packageName || info.packageName === config.packageName);
-    return stablePluginServerId(info.packageName) === serverId || path.basename(directory) === serverId;
+    if (configDirectory && path.resolve(directory) === configDirectory) return !config.packageName || info.packageName === config.packageName;
+    const matchesPackage = stablePluginServerId(info.packageName) === serverId || path.basename(directory) === serverId;
+    return matchesPackage && (!config?.packageName || info.packageName === config.packageName);
   });
   if (!match) return { installed: false };
   return { installed: true, installDirectory: match.directory, packageName: match.info.packageName, ...(match.info.installedVersion ? { installedVersion: match.info.installedVersion } : {}) };
