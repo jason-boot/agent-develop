@@ -1,15 +1,36 @@
 import type { ChatReply, DailyModelUsage, ProjectFileChange, ToolTrace, UsageChartSpec, UsageRecord, UsageSummary } from "@little-sunshine/shared/types";
-import { callUsageMcpTool, connectLocalUsageMcpClient, connectUsageMcpClient } from "@/lib/usage-mcp";
+import { callMcpTool, connectLocalMcpClient, connectRemoteMcpClient } from "@/lib/mcp-client";
 import { isDesktopMcpRuntime, listExternalMcpServers } from "@/lib/external-mcp-config";
 import { ModelServiceError, requestImageGeneration, requestModelAgentTurn, type AgentImageInput, type AgentMessage, type AgentToolCall, type AgentToolDefinition, type ModelConfig } from "@/lib/model-config";
 import { callImageGenerationMcpTool, getImageGenerationMcpConfig, imageGenerationMcpTool } from "@/lib/image-generation-mcp";
 import { createVideoGenerationTask, getVideoGenerationConfig, videoGenerationMcpTool } from "@/lib/video-generation-mcp";
 import { getActiveWebSearchMcpConfig, isWebSearchToolName, webSearchProviderCatalog } from "@/lib/web-search-mcp";
+import { callBrowserTool, currentBrowserBridge } from "@/lib/browser-bridge";
 
 const emptySummary: UsageSummary = {
   requestCount: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, totalTokens: 0,
   totalCost: "0.000000", avgLatency: 0, successCount: 0, failedCount: 0, activeUserCount: 0, currency: "CNY",
 };
+
+const manuallyEnableableBrowserTools = new Set([
+  "browser_navigate",
+  "browser_tabs",
+  "browser_click",
+  "browser_type",
+  "browser_fill_form",
+  "browser_select_option",
+  "browser_press_key",
+  "browser_navigate_back",
+  "browser_wait_for",
+]);
+const readOnlyMysqlTools = new Set([
+  "mysql_get_server_info",
+  "mysql_list_databases",
+  "mysql_list_tables",
+  "mysql_describe_table",
+  "mysql_list_indexes",
+  "mysql_query",
+]);
 
 function dayString(date: Date) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(date);
@@ -33,6 +54,12 @@ function labelForRange(from?: string, to?: string) {
   return from && to ? from + " 至 " + to : (from || to || "");
 }
 
+function asksToQueryLocalMysql(question: string) {
+  const asksAboutLocalData = /mysql|my\s*sql|sql|数据库|本机数据库|本地数据库|数据表|表结构|查表|表/i.test(question);
+  const asksToInspectData = /查|查询|查看|读取|列出|统计|分析|有哪些|多少|show|select|describe|list|query/i.test(question);
+  return asksAboutLocalData && asksToInspectData;
+}
+
 function messageOnlyReply(answer: string, intent: string, onToken?: (token: string) => void): ChatReply {
   onToken?.(answer);
   return { answer, records: [], summary: emptySummary, intent, periodLabel: "", trace: [], messageOnly: true };
@@ -50,6 +77,7 @@ function buildSystemPrompt(today: string, codingMode = false) {
 
 工具使用规则：
 - 先理解用户意图，再根据本轮提供的工具名称、说明和参数结构，判断是否需要调用工具。不要把能力限定在某一个业务领域，也不要调用与问题无关的工具。
+- 本机 MySQL 工具只用于用户明确要求查询本机数据库、SQL 或数据表时；问候、闲聊和一般问题不得调用。
 - 问候、闲聊、解释、写作和一般知识问题，通常直接回答；涉及用户专属、系统内或实时数据的问题，只有在存在相关工具时才调用工具。没有相关工具或工具无法提供答案时，应如实说明，不得猜测数据或声称已查询。
 - 严格遵循工具说明和参数结构。只调用本轮提供且获准使用的工具；不要生成或执行 SQL。工具调用失败时，简洁说明失败情况，不要伪造结果。需要多个工具时，调用完成回答所需的最少工具。
 - 根据工具返回内容准确作答；区分事实、推断和未知信息。保留与用户问题相关的数值、单位、时间范围和精度。
@@ -65,7 +93,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-type McpConnection = Awaited<ReturnType<typeof connectUsageMcpClient>>;
+type McpConnection = Awaited<ReturnType<typeof connectRemoteMcpClient>>;
 type McpListedTool = Awaited<ReturnType<McpConnection["client"]["listTools"]>>["tools"][number];
 
 function extractChartSpec(text: string): { answer: string; chartSpec?: UsageChartSpec } {
@@ -109,7 +137,7 @@ export async function answerQuestion(
     const configuredWebSearch = await getActiveWebSearchMcpConfig();
     const legacyImageConfig = configuredImageMcp ? undefined : modelConfig.imageGeneration;
     const imageToolEnabled = Boolean(configuredImageMcp?.enabled || legacyImageConfig);
-    const allowed = new Map<string, { tool: McpListedTool; client?: McpConnection["client"]; remoteName: string; label: string; webSearchProviderId?: string }>();
+    const allowed = new Map<string, { tool: McpListedTool; client?: McpConnection["client"]; remoteName: string; label: string; webSearchProviderId?: string; browserBridge?: boolean; bridgeMcpId?: string }>();
     const tools: AgentToolDefinition[] = [];
     const originalProjectFiles = projectFiles ? { ...projectFiles } : undefined;
     if (projectFiles) {
@@ -133,7 +161,7 @@ export async function answerQuestion(
     }
     if (configuredWebSearch) {
       try {
-        const remote = await connectUsageMcpClient(new URL(configuredWebSearch.endpoint), configuredWebSearch.apiKey || undefined);
+        const remote = await connectRemoteMcpClient(new URL(configuredWebSearch.endpoint), configuredWebSearch.apiKey || undefined);
         clients.push(remote);
         const { tools: remoteTools } = await remote.client.listTools();
         const providerName = webSearchProviderCatalog[configuredWebSearch.providerId].name;
@@ -150,11 +178,11 @@ export async function answerQuestion(
       }
     }
     const externalServers = await listExternalMcpServers();
-    for (const server of externalServers.filter((item) => item.enabled && (item.transport !== "stdio" || isDesktopMcpRuntime()))) {
+    for (const server of externalServers.filter((item) => item.enabled && item.transport !== "bridge" && item.name !== "内部工具：Playwright MCP" && item.name !== "内部工具：MySQL MCP" && item.name !== "内部工具" && (item.transport !== "stdio" || isDesktopMcpRuntime()))) {
       try {
         const remote = server.transport === "stdio"
-          ? await connectLocalUsageMcpClient(server)
-          : await connectUsageMcpClient(new URL(server.url), server.token);
+          ? await connectLocalMcpClient(server)
+          : await connectRemoteMcpClient(new URL(server.url), server.token);
         clients.push(remote);
         const { tools: remoteTools } = await remote.client.listTools();
         for (const tool of remoteTools) {
@@ -170,10 +198,39 @@ export async function answerQuestion(
         // An unavailable external server should not block general chat.
       }
     }
+    const browserBridge = currentBrowserBridge();
+    const asksForLocalMysql = asksToQueryLocalMysql(question);
+    if (browserBridge) for (const server of externalServers.filter((item) => item.enabled && (item.transport === "bridge" || item.name === "内部工具：Playwright MCP" || item.name === "内部工具：MySQL MCP" || item.name === "内部工具"))) {
+      for (const tool of browserBridge.tools) {
+        const bridgeMcpId = server.bridgeServerId || (server.name === "内部工具：MySQL MCP" ? "mysql" : server.name === "内部工具：Playwright MCP" ? "playwright" : tool.serverId);
+        if (tool.serverId !== bridgeMcpId) continue;
+        const mysqlMcp = bridgeMcpId === "mysql";
+        if (mysqlMcp && !browserBridge.mcpServers?.some((entry) => entry.id === "mysql" && entry.connected)) continue;
+        if (server.transport === "bridge" && !browserBridge.mcpServers?.some((entry) => entry.id === bridgeMcpId && entry.connected)) continue;
+        const explicitlyAllowedBrowserAction = manuallyEnableableBrowserTools.has(tool.name) && server.allowedTools.includes(tool.name);
+        const internallyReadOnlyMysqlTool = mysqlMcp && readOnlyMysqlTools.has(tool.name);
+        if ((!internallyReadOnlyMysqlTool && tool.annotations?.destructiveHint === true && !explicitlyAllowedBrowserAction) || (!internallyReadOnlyMysqlTool && tool.annotations?.readOnlyHint !== true && !server.allowedTools.includes(tool.name)) || server.disabledTools.includes(tool.name)) continue;
+        const exposedName = `ext_${server.id.replace(/-/g, "").slice(0, 8)}_${tool.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 45)}`;
+        if (allowed.has(exposedName)) continue;
+        const bridgeMcpName = bridgeMcpId === "mysql" ? "MySQL MCP" : bridgeMcpId === "playwright" ? "Playwright MCP" : server.name;
+        allowed.set(exposedName, { tool: tool as McpListedTool, remoteName: tool.name, label: `桥接工具 · ${bridgeMcpName} · ${tool.title || tool.name}`, browserBridge: true, bridgeMcpId });
+        tools.push({ name: exposedName, description: `${server.name} ${tool.name}：${tool.description || tool.title || tool.name}`, inputSchema: tool.inputSchema as Record<string, unknown> });
+      }
+    }
+    const browserNavigateEnabled = [...allowed.values()].some((entry) => entry.bridgeMcpId === "playwright" && entry.remoteName === "browser_navigate");
+    const browserToolsEnabled = [...allowed.values()].some((entry) => entry.bridgeMcpId === "playwright");
+    const mysqlToolsEnabled = [...allowed.values()].some((entry) => entry.bridgeMcpId === "mysql");
+    const mysqlSetupNeeded = asksForLocalMysql && externalServers.some((server) => server.enabled && server.name === "内部工具：MySQL MCP") && !browserBridge?.mcpServers?.some((entry) => entry.id === "mysql" && entry.connected);
+    const browserInstructions = browserToolsEnabled
+      ? "\n\nPlaywright 页面操作规则：调用工具时，使用本轮工具列表中实际提供的完整工具名（可能带 ext_ 前缀），不要自行拼写工具名。需要点击、输入或填写表单时，先调用页面快照工具查看当前页面。交互工具的 target 必须使用最近一次快照返回的具体 ref；不要把 textbox、button、按钮文字等通用名称直接当成 target，也不要猜 ref。页面导航或操作后目标不存在时，重新获取快照，再根据新的 ref 操作；不要原样重复失败的参数。"
+      : "";
+    const mysqlInstructions = mysqlToolsEnabled
+      ? "\n\nMySQL 查询规则：本机 MySQL MCP 工具已在本轮可用。仅当用户询问本机 MySQL、数据库或数据表查询时调用；其他话题不要调用数据库工具。调用时只能使用本轮工具列表中的工具，先按工具 schema 选择合适的只读查询工具；用户已给出表名并只要求前 N 条记录时，直接用该 MCP 的查询工具执行 SELECT * FROM 表名 LIMIT N，不要先列出表或查看结构；只有用户询问表结构或表名不明确时才使用表结构/列表工具。不得尝试 INSERT、UPDATE、DELETE、DDL 或其他写操作。结果只包含有限行数，依据实际返回的数据回答，不要编造记录。"
+      : mysqlSetupNeeded ? "\n\nMySQL 配置规则：用户请求查询 MySQL，但本机 MySQL MCP 尚未配置或连接。请明确告知用户先在桥接工具页面配置并启动本机 MySQL MCP；不要声称已经查询，也不要编造结果。" : "";
     const messages: AgentMessage[] = [
       {
         role: "system",
-        content: buildSystemPrompt(dayString(new Date()), Boolean(projectFiles)) + (imageToolEnabled ? "\n\n图片生成规则：用户明确要求生成或编辑图片时，调用 generate_image 工具；不要假装已生成。调用成功后再简短说明结果。" : "") + (configuredVideoMcp ? "\n\n视频生成规则：用户明确要求生成视频时，调用 generate_video 工具；不要把静态图片当成视频，也不要假装已生成。工具完成后再简短说明结果。" : "") + (configuredWebSearch ? `\n\n网页搜索规则：用户询问最新动态、当前事实、需要在线核实的信息或明确要求搜索网页时，优先调用当前启用的网页搜索工具。根据搜索结果回答并说明来源，不得编造搜索结果。${configuredWebSearch.providerId === "firecrawl" ? "调用 Firecrawl 工具时，arguments 必须是按工具 schema 填写的扁平参数对象，不要套 {name, arguments} 包装层。" : ""}` : ""),
+        content: buildSystemPrompt(dayString(new Date()), Boolean(projectFiles)) + (imageToolEnabled ? "\n\n图片生成规则：用户明确要求生成或编辑图片时，调用 generate_image 工具；不要假装已生成。调用成功后再简短说明结果。" : "") + (configuredVideoMcp ? "\n\n视频生成规则：用户明确要求生成视频时，调用 generate_video 工具；不要把静态图片当成视频，也不要假装已生成。工具完成后再简短说明结果。" : "") + (configuredWebSearch ? `\n\n网页搜索规则：用户询问最新动态、当前事实、需要在线核实的信息或明确要求搜索网页时，优先调用当前启用的网页搜索工具。根据搜索结果回答并说明来源，不得编造搜索结果。${configuredWebSearch.providerId === "firecrawl" ? "调用 Firecrawl 工具时，arguments 必须是按工具 schema 填写的扁平参数对象，不要套 {name, arguments} 包装层。" : ""}` : "") + browserInstructions + mysqlInstructions + (browserNavigateEnabled ? "\n\n浏览器操作规则：用户要求打开网址或导航到某个页面时，调用已启用的 Playwright browser_navigate 工具；它会在用户已连接的浏览器标签页中导航。不要声称无法打开网址。" : ""),
       },
       ...history.map((message) => ({ role: message.role, content: message.content, ...(message.images?.length ? { images: message.images } : {}) })),
       { role: "user", content: question, ...(images.length ? { images } : {}) },
@@ -217,7 +274,7 @@ export async function answerQuestion(
     const generatedVideoTaskIds: string[] = [];
     let invalidToolArgumentRetries = 0;
 
-    const maxTurns = projectFiles ? 24 : 5;
+    const maxTurns = projectFiles ? 24 : browserToolsEnabled || (mysqlToolsEnabled && asksForLocalMysql) ? 16 : 5;
     for (let turnIndex = 0; turnIndex < maxTurns; turnIndex += 1) {
       const turn = await requestModelAgentTurn(modelConfig, messages, tools, streamToken);
       generatedImages.push(...turn.generatedImages);
@@ -235,9 +292,11 @@ export async function answerQuestion(
       messages.push({ role: "assistant", content: turn.text, toolCalls: turn.toolCalls });
       intent = "usage_query";
       for (const call of turn.toolCalls) {
-        if (!allowed.has(call.name)) throw new Error("模型请求了未授权的 MCP 工具，已拒绝执行。");
-        const routedTool = allowed.get(call.name);
-        if (!routedTool) throw new Error("模型请求了未授权的 MCP 工具，已拒绝执行。");
+        const routedTool = allowed.get(call.name) || [...allowed.values()].find((entry) => entry.browserBridge && entry.remoteName === call.name);
+        if (!routedTool) {
+          messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify({ error: "工具名称不在本轮授权工具列表中，没有执行任何操作。", availableTools: tools.map((tool) => tool.name), instruction: "请改用 availableTools 中列出的完整名称和原工具参数重新调用。" }) });
+          continue;
+        }
         if (call.name === "generate_image" && imageToolEnabled) {
           if (call.argumentError) throw new ModelServiceError(call.argumentError);
           const prompt = typeof call.arguments.prompt === "string" ? call.arguments.prompt.trim() : "";
@@ -292,7 +351,7 @@ export async function answerQuestion(
           projectFiles[path] = content;
           output = { path, status: Object.hasOwn(originalProjectFiles || {}, path) ? "updated" : "created", awaitingUserApproval: true };
         } else {
-          if (!routedTool.client) throw new Error("MCP 工具客户端不可用。");
+          if (!routedTool.client && !routedTool.browserBridge) throw new Error("MCP 工具客户端不可用。");
           let toolArguments = call.arguments;
           if (routedTool.webSearchProviderId === "firecrawl" && routedTool.remoteName === "firecrawl_search" && isObject(toolArguments.arguments)) {
             // Some model providers copy Firecrawl's documentation envelope into the MCP call.
@@ -300,13 +359,21 @@ export async function answerQuestion(
             toolArguments = toolArguments.arguments;
           }
           try {
-            output = await callUsageMcpTool(routedTool.client, routedTool.remoteName, toolArguments);
+            if (routedTool.browserBridge) onStatus?.(routedTool.bridgeMcpId === "mysql" ? "正在查询本机 MySQL…" : routedTool.bridgeMcpId === "playwright" && routedTool.remoteName === "browser_navigate" ? "正在打开已连接浏览器中的网页…" : "正在执行本机 MCP 工具…");
+            output = routedTool.browserBridge ? await callBrowserTool(routedTool.bridgeMcpId || "", routedTool.remoteName, toolArguments) : await callMcpTool(routedTool.client!, routedTool.remoteName, toolArguments);
+            if (routedTool.browserBridge) onStatus?.(routedTool.bridgeMcpId === "mysql" ? "本机 MySQL 查询完成，正在整理结果…" : "本机 MCP 工具已完成，正在整理答复…");
           } catch (error) {
-            if (routedTool.webSearchProviderId) {
+            if (routedTool.browserBridge) {
+              const detail = error instanceof Error ? error.message : "浏览器工具调用失败。";
+              output = routedTool.bridgeMcpId === "playwright"
+                ? { error: detail, instruction: "请先调用 browser_snapshot 获取当前页面快照，再使用快照中的具体 ref 重试；不要重复刚才失败的 target。" }
+                : { error: detail };
+            } else if (routedTool.webSearchProviderId) {
               const providerName = webSearchProviderCatalog[routedTool.webSearchProviderId as keyof typeof webSearchProviderCatalog].name;
               throw new ModelServiceError(`${providerName}搜索失败：${error instanceof Error ? error.message : "MCP 工具调用失败。"}`);
+            } else {
+              throw error;
             }
-            throw error;
           }
         }
         messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(output) });
@@ -336,7 +403,7 @@ export async function answerQuestion(
         finished = true;
         break;
       }
-      if (turnIndex === maxTurns - 1) throw new ModelServiceError(projectFiles ? "项目分析步骤较多，已达到本轮调用上限。请指定某个目录或模块后分批生成架构说明。" : "模型连续调用 MCP 工具次数过多，请缩小问题范围后重试。");
+      if (turnIndex === maxTurns - 1) throw new ModelServiceError(projectFiles ? "项目分析步骤较多，已达到本轮调用上限。请指定某个目录或模块后分批生成架构说明。" : browserToolsEnabled ? "浏览器操作步骤较多，已达到本轮调用上限。请分几条消息完成操作。" : "模型连续调用 MCP 工具次数过多，请缩小问题范围后重试。");
     }
 
     if (!finished) throw new Error("模型未能完成本轮回答，请重试。");

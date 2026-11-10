@@ -78,17 +78,30 @@ async function handlerPOST(request: Request) {
     const model = requestedId ? await findModel(requestedId) : null;
     if (requestedId && !model) return NextResponse.json({ error: "所选模型配置不存在，请重新选择模型。" }, { status: 400 });
     const encoder = new TextEncoder();
+    let clientDisconnected = false;
+    let streamClosed = false;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        const send = (value: unknown) => controller.enqueue(encoder.encode(JSON.stringify(value) + "\n"));
+        const send = (value: unknown) => {
+          if (clientDisconnected || streamClosed) return;
+          try { controller.enqueue(encoder.encode(JSON.stringify(value) + "\n")); }
+          catch { clientDisconnected = true; }
+        };
+        const close = () => {
+          if (clientDisconnected || streamClosed) return;
+          streamClosed = true;
+          try { controller.close(); }
+          catch { clientDisconnected = true; }
+        };
         void answerQuestion(question, model, (token) => send({ type: "token", token }), history, currentImages.images, projectFiles, (status) => send({ type: "status", status }), conversationId)
-          .then((result) => { send({ type: "done", result }); controller.close(); })
+          .then((result) => { send({ type: "done", result }); close(); })
           .catch((error) => {
             console.error("Chat stream failed", error);
             send({ type: "error", error: chatErrorMessage(error) });
-            controller.close();
+            close();
           });
       },
+      cancel() { clientDisconnected = true; },
     });
     return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } });
   } catch (error) {

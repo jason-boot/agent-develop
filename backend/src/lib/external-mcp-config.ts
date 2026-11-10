@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { migrateLegacyConfigs, readExternalMcpConfig, writeExternalMcpConfig } from "@/lib/local-db";
 
-export type McpTransport = "http" | "stdio";
-export type ExternalMcpServer = { id: string; name: string; transport: McpTransport; url: string; token: string; command: string; args: string[]; env: Record<string, string>; cwd: string; enabled: boolean; disabledTools: string[]; allowedTools: string[] };
+export type McpTransport = "http" | "stdio" | "bridge";
+export type ExternalMcpServer = { id: string; name: string; transport: McpTransport; url: string; token: string; command: string; args: string[]; env: Record<string, string>; cwd: string; bridgeServerId?: string; enabled: boolean; disabledTools: string[]; allowedTools: string[] };
 type Store = { servers: ExternalMcpServer[] };
 
 export function isDesktopMcpRuntime() { return process.env.LITTLE_SUNSHINE_RUNTIME === "desktop"; }
@@ -17,10 +17,16 @@ async function writeStore(store: Store) {
   await writeExternalMcpConfig(store);
 }
 
-function normalizeServer(input: { name?: unknown; transport?: unknown; url?: unknown; token?: unknown; command?: unknown; args?: unknown; env?: unknown; cwd?: unknown }, existing?: ExternalMcpServer): ExternalMcpServer {
+function normalizeServer(input: { name?: unknown; transport?: unknown; url?: unknown; token?: unknown; command?: unknown; args?: unknown; env?: unknown; cwd?: unknown; bridgeServerId?: unknown }, existing?: ExternalMcpServer): ExternalMcpServer {
   const name = typeof input.name === "string" ? input.name.trim() : existing?.name || "";
-  if (input.transport !== undefined && input.transport !== "stdio" && input.transport !== "http") throw new Error("MCP 传输类型无效。");
-  const transport = input.transport === "stdio" || input.transport === "http" ? input.transport : existing?.transport || "http";
+  if (input.transport !== undefined && input.transport !== "stdio" && input.transport !== "http" && input.transport !== "bridge") throw new Error("MCP 传输类型无效。");
+  const transport = input.transport === "stdio" || input.transport === "http" || input.transport === "bridge" ? input.transport : existing?.transport || "http";
+  if (transport === "bridge") {
+    const bridgeServerId = typeof input.bridgeServerId === "string" ? input.bridgeServerId : existing?.bridgeServerId || "";
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(bridgeServerId) && !/^@[a-zA-Z0-9._~-]+\/[a-zA-Z0-9._~-]+$/.test(bridgeServerId)) throw new Error("本地 MCP 编号无效。");
+    if (!name) throw new Error("请填写 MCP 名称。");
+    return { id: existing?.id || randomUUID(), name, transport, url: `bridge://${bridgeServerId}`, token: "", command: "", args: [], env: {}, cwd: "", bridgeServerId, enabled: existing?.enabled ?? true, disabledTools: existing?.disabledTools || [], allowedTools: existing?.allowedTools || [] };
+  }
   if (transport === "stdio") {
     if (!isDesktopMcpRuntime()) throw new Error("本地命令 MCP 只能在 Desktop 版中配置和运行。");
     const command = typeof input.command === "string" ? input.command.trim() : existing?.command || "";
@@ -54,7 +60,22 @@ export async function listExternalMcpServers() {
   return (await readStore()).servers;
 }
 
-export async function saveExternalMcpServer(input: { id?: unknown; name?: unknown; transport?: unknown; url?: unknown; token?: unknown; command?: unknown; args?: unknown; env?: unknown; cwd?: unknown }) {
+export async function ensureInternalMcpServers(entries: Array<{ name: string; url: string }>) {
+  const store = await readStore();
+  let changed = false;
+  for (const entry of entries) {
+    const existing = store.servers.find((item) => item.transport === "http" && item.url === entry.url);
+    if (existing) continue;
+    const server = normalizeServer({ name: `内部工具：${entry.name}`, transport: "http", url: entry.url });
+    server.enabled = false;
+    store.servers.push(server);
+    changed = true;
+  }
+  if (changed) await writeStore(store);
+  return store.servers;
+}
+
+export async function saveExternalMcpServer(input: { id?: unknown; name?: unknown; transport?: unknown; url?: unknown; token?: unknown; command?: unknown; args?: unknown; env?: unknown; cwd?: unknown; bridgeServerId?: unknown }) {
   const store = await readStore();
   const existing = typeof input.id === "string" ? store.servers.find((item) => item.id === input.id) : undefined;
   const next = normalizeServer(input, existing);

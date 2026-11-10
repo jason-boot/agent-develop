@@ -156,13 +156,9 @@ html,body{font-size:14px}
 .sidebar{background:#f7f7f7;border-right-color:#f0f0f0}
 .main-area{display:flex;flex-direction:column;background:#fff}
 .main-area{position:relative}
-.mcp-tools-button{position:absolute;z-index:10;top:18px;right:24px;display:flex;align-items:center;gap:7px;height:34px;padding:0 12px;border:1px solid #e7e7eb;border-radius:9px;background:#fff;color:#55565f;font-size:12px;box-shadow:0 1px 3px #20212408}
-.mcp-tools-button:hover{border-color:#d7d4e1;background:#faf9fc}
-.mcp-tools-button span{font-size:16px;color:#7062bb}
-.mcp-tools-modal{width:min(100%,780px);max-height:min(88vh,720px);display:flex;flex-direction:column;overflow:hidden;padding:23px;border:1px solid #e8e7ed;border-radius:13px;background:#fff;box-shadow:0 22px 70px #25212d38;animation:range-in .15s ease-out}
-.mcp-tools-modal>header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}
-.mcp-tools-modal h2{margin:6px 0 4px;font-size:19px;letter-spacing:-.3px}
-.mcp-tools-modal header p{margin:0;color:#92939c;font-size:12px}
+.mcp-tools-page{position:fixed;z-index:30;inset:0 0 0 238px;display:grid;grid-template-columns:minmax(0,1fr);overflow:hidden;pointer-events:none;background:transparent}
+.mcp-tools-page-content{grid-column:1;width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;padding:24px 0;border:0;border-radius:0;pointer-events:auto;background:#fff}
+.mcp-tools-page-inner{width:min(920px,calc(100% - 48px));height:100%;min-width:0;margin:0 auto;display:flex;flex-direction:column}
 .mcp-tools-list{overflow:auto;display:grid;gap:10px;padding:1px 3px 2px 1px}
 .external-mcp-tab{min-height:320px;display:flex;flex:1;overflow:hidden}
 .mcp-manager-layout{display:flex;flex:1;min-height:0;gap:16px;overflow:hidden}
@@ -184,10 +180,22 @@ html,body{font-size:14px}
 .external-mcp-tool strong{overflow:hidden;color:#4d4e58;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .external-mcp-tool small{color:#93949c;font-size:10px;line-height:1.4}
 .external-mcp-unsafe{color:#ad6b45;font-size:10px;white-space:nowrap}
-.mcp-tool-card{padding:13px 14px;border:1px solid #e9e8ee;border-radius:9px;background:#fff}
+.mcp-tool-card{position:relative;padding:13px 14px;border:1px solid #e9e8ee;border-radius:9px;background:#fff}
+.mcp-tool-card.external-mcp-card{display:flex;flex-direction:column}
+.mcp-tool-card-bottom{margin-top:auto;padding-top:12px}
+.mcp-tool-card-bottom>div:last-child{margin-right:-8px}
 .mcp-tool-card-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.mcp-tool-card-heading.has-actions>.external-mcp-server-title{padding-right:0}
+.mcp-tool-card-title-row{padding-right:205px}
+.mcp-tool-card-heading.has-actions .mcp-tool-card-title-row>strong{position:relative;top:-4px}
 .mcp-tool-card-heading strong{font-size:13px;color:#34353d}
 .mcp-tool-card-heading>span{padding:3px 7px;border-radius:10px;background:#eef7f1;color:#32815c;font-size:10px}
+.mcp-tool-card-actions{position:absolute;top:6px;right:6px;z-index:1;display:flex;flex:0 0 auto;align-items:center;gap:5px}
+.mcp-tool-card-actions>span{padding:3px 6px;border-radius:10px;font-size:10px;line-height:1.2;white-space:nowrap}
+.mcp-tool-card-actions .mcp-status-ready{background:#eef7f1;color:#32815c}
+.mcp-tool-card-actions .mcp-status-pending{background:#f1f1f4;color:#73747d}
+.mcp-tool-card .mcp-install-source{display:flex;min-width:0;align-items:center;gap:4px;overflow:hidden;white-space:nowrap}
+.mcp-tool-card .mcp-install-source code{display:block;min-width:0;overflow:hidden;margin-top:0;text-overflow:ellipsis;white-space:nowrap}
 .mcp-tool-card code{display:block;margin-top:5px;color:#777783;font-size:11px}
 .mcp-tool-card p{margin:9px 0 0;color:#666771;font-size:12px;line-height:1.6}
 .mcp-tools-state{padding:36px 12px;text-align:center;color:#898a93;font-size:12px}
@@ -237,7 +245,7 @@ html,body{font-size:14px}
 .composer-tools button[type="submit"]:disabled{background:#d7d7dc;color:#fff}
 .disclaimer{font-size:10px;margin-top:9px}
 .error-banner{font-size:12px}
-@media(max-width:800px){.workspace{height:100vh;min-height:0}.welcome-center h1{font-size:24px}.welcome-center .suggestion-grid{grid-template-columns:1fr}.welcome-center{transform:translateY(-97px)}.composer-area{padding-left:16px;padding-right:16px}.chat-content{padding-left:16px;padding-right:16px}.mcp-tools-button{top:12px;right:14px;height:31px;padding:0 9px;font-size:11px}.mcp-tools-modal{padding:17px}.mcp-category-sidebar{flex-basis:116px;padding-right:8px}.mcp-manager-layout{gap:10px}}
+@media(max-width:800px){.workspace{height:100vh;min-height:0}.welcome-center h1{font-size:24px}.welcome-center .suggestion-grid{grid-template-columns:1fr}.welcome-center{transform:translateY(-97px)}.composer-area{padding-left:16px;padding-right:16px}.chat-content{padding-left:16px;padding-right:16px}.mcp-tools-page-content{padding:17px 0}.mcp-tools-page-inner{width:min(920px,calc(100% - 32px))}.mcp-category-sidebar{flex-basis:116px;padding-right:8px}.mcp-manager-layout{gap:10px}}
 
 /* Keep the app viewport fixed; only the message list scrolls after chat starts. */
 html,body{height:100%;overflow:hidden}
@@ -334,9 +342,11 @@ html,body{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sa
 .main-area{background:#f5f7fb}.topbar{height:52px;flex:0 0 52px;border-color:#e8ebf2;padding:0 22px;background:#fff}.breadcrumbs{font-size:12px}.breadcrumbs strong{color:#282e40}.secure-badge{border-color:#d8eee5;background:#f2faf6;color:#547667;font-size:10px}.icon-button{width:30px;height:30px;border-radius:9px}
 .export-button:hover{background:#f7f8fc}
 .insights-panel{padding:26px 24px 20px;background:#f7f8fc}.insights-header h2{font-size:17px;letter-spacing:-.25px;color:#242b3e}.period-caption{font-size:10px;color:#798196}.more-button{border-color:#e3e7ef;border-radius:8px}.metric-grid{gap:10px;margin-top:17px}.metric-card{border-color:#e6e9f1;border-radius:11px;padding:13px;background:#fff;box-shadow:0 2px 5px #202b4505}.metric-top{color:#737c90;font-size:10px}.metric-icon{width:24px;height:24px;border-radius:8px;background:#f0efff;color:#5c59c9}.metric-value{font-size:20px;letter-spacing:-.7px;color:#242b3e}.metric-card small{font-size:9px;color:#858da0}.health-card{border-color:#e6e9f1;border-radius:11px;padding:13px;box-shadow:0 2px 5px #202b4505}.health-icon{width:24px;height:24px;border-radius:8px}.health-card strong{font-size:11px;color:#30374a}.health-card small{font-size:9px;color:#7c8598}.health-stats{font-size:9px}.table-heading{margin-top:22px}.table-heading h3{font-size:13px;color:#30374a}.table-heading span{font-size:9px;color:#858da0}.export-button{border-color:#e1e5ed;border-radius:7px;color:#50596d;padding:7px 9px;font-size:9px}.tabs{border-color:#e4e8f0}.tabs button{font-size:10px;color:#7c8498}.tabs button.selected{color:#5352c2;border-color:#5958d2}.records-table-wrap{border-color:#e5e8f0;border-radius:0 0 9px 9px}th{background:#f8f9fc;color:#778095;font-size:9px;font-weight:600}td{border-color:#edf0f5;padding:8px;color:#596176;font-size:9px}td strong{font-size:10px;color:#30374a}td small{font-size:8px;color:#8a92a3}
-.mcp-tools-button{border-color:#e0e4ed;border-radius:9px;background:#fff;color:#4b5367;box-shadow:0 3px 10px #202b450d}.mcp-tools-button:hover{border-color:#c7c7f3;color:#5554cb}
+.mcp-tools-menu-item.active{background:#efeffa;color:#5553c7}
 .markdown-table-wrap,.daily-trend{border-color:#e5e8f0;border-radius:12px;box-shadow:0 2px 8px #202b4508}.markdown-table th{background:#f6f7fb}.markdown-table tbody tr:nth-child(even){background:#fafbfe}.daily-trend-heading strong{color:#293147}.trend-download{border-color:#e3e7ef;border-radius:8px}.trend-gridline{stroke:#e8ebf2}
 @media(max-width:800px){.sidebar{width:210px;flex-basis:210px}.topbar{padding:0 22px}.insights-panel{padding:20px 16px}}
+@media(max-width:1050px){.mcp-tools-page{left:190px}}
+@media(max-width:800px){.mcp-tools-page{left:210px}}
 .new-project{width:100%;min-height:40px;display:flex;align-items:center;justify-content:flex-start;gap:10px;margin-top:8px;padding:0 12px;border:1px solid transparent;border-radius:9px;background:transparent;color:#596176;text-align:left;font:inherit;font-size:12px;font-weight:500;transition:background .15s,color .15s}.new-project:hover:not(:disabled){background:#f0f0ff;color:#5553c7}.new-project:disabled{cursor:default;opacity:.6}.new-project svg{width:17px;height:17px;flex:0 0 17px;stroke-width:1.8}
 .project-selection{display:flex;align-items:flex-start;gap:8px;margin:8px 2px 0;padding:10px;border:1px solid #e6e9f1;border-radius:9px;background:#fafbfe}.project-selection>div{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}.project-selection strong{overflow:hidden;color:#30374a;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.project-selection small{color:#858da0;font-size:9px;line-height:1.5}.project-selection>button{width:20px;height:20px;flex:0 0 20px;border:0;border-radius:5px;background:transparent;color:#858da0;font-size:17px;line-height:1}.project-selection>button:hover{background:#f0f0ff;color:#5553c7}.project-error{margin:7px 2px 0;color:#b64b47;font-size:10px;line-height:1.5;overflow-wrap:anywhere}
 .project-changes{display:flex;flex-direction:column;gap:10px;max-width:600px;margin:12px 0 4px;padding:13px;border:1px solid #dfe3ed;border-radius:11px;background:#fafbfe}.project-changes>div:first-child{display:flex;flex-direction:column;gap:3px}.project-changes>div:first-child strong{font-size:12px;color:#30374a}.project-changes>div:first-child small{font-size:10px;color:#7c8598}.project-changes details{font-size:11px;color:#4d566b}.project-changes summary{width:max-content;cursor:pointer;color:#5554cb}.project-change-diff{margin-top:10px}.project-change-diff>strong,.project-change-diff>small{display:block;margin:6px 0;color:#535c70;font-size:10px}.project-change-diff pre{max-height:260px;overflow:auto;margin:0;padding:10px;border:1px solid #e6e9f1;border-radius:7px;background:#fff;color:#30374a;font:11px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.project-changes>button{align-self:flex-start}
@@ -368,3 +378,11 @@ html,body{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sa
 .profile-provider-info{display:flex;align-items:center;gap:10px}.profile-provider-info>div{display:grid;gap:4px}.profile-provider-avatar{width:34px;height:34px;flex:0 0 34px;border:1px solid #e5e7ef;border-radius:50%;object-fit:cover;background:#f5f5f8}
 
 .avatar-image{display:block;width:25px;height:25px;flex:0 0 25px;border-radius:50%;object-fit:cover;overflow:hidden}
+
+.tool-trace>summary{list-style:none;cursor:pointer;border-bottom:0}
+.tool-trace>summary::-webkit-details-marker{display:none}
+.tool-trace[open]>summary{border-bottom:1px solid #eeeef1}
+.trace-step-count{margin-left:auto;color:#a0a1a9;font-size:8px}
+.trace-toggle-icon{width:13px;height:13px;flex:0 0 13px;color:#a0a1a9;transition:transform .16s ease}
+.tool-trace[open] .trace-toggle-icon{transform:rotate(180deg)}
+.tool-trace>summary:focus-visible{outline:2px solid #8b79e6;outline-offset:-2px}

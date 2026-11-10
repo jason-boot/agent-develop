@@ -43,6 +43,17 @@ function fetchFailureMessage(error: unknown) {
   return `无法连接模型服务${code ? `（${code}）` : ""}，请检查 API 地址和服务端网络。`;
 }
 
+function modelHttpFailureMessage(response: Response, toolCalls = false) {
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("retry-after");
+    const retryHint = retryAfter && /^\d+$/.test(retryAfter) ? ` 建议 ${retryAfter} 秒后重试。` : " 请等待一会儿后重试。";
+    return `模型服务限流（HTTP 429）。${retryHint}如果持续出现，请检查模型服务的请求频率限制或账户额度。`;
+  }
+  return toolCalls
+    ? `模型服务返回 HTTP ${response.status}，请检查模型名称、工具调用支持、API 地址和 API Key。`
+    : `模型服务返回 HTTP ${response.status}，请检查模型名称、API 地址和 API Key。`;
+}
+
 type ModelStore = { models: ModelConfig[]; defaultModelId: string | null };
 
 async function readStore(): Promise<ModelStore> {
@@ -279,7 +290,7 @@ export async function requestModelCompletion(config: ModelConfig, messages: Arra
   } catch (error) {
     throw new ModelServiceError(fetchFailureMessage(error));
   }
-  if (!response.ok) throw new ModelServiceError("模型服务返回 HTTP " + response.status + "，请检查模型名称、API 地址和 API Key。");
+  if (!response.ok) throw new ModelServiceError(modelHttpFailureMessage(response));
   let payload: Record<string, unknown>;
   try { payload = await response.json() as Record<string, unknown>; }
   catch { throw new ModelServiceError("模型服务响应格式无法识别，请检查所选协议是否正确。"); }
@@ -431,7 +442,8 @@ export async function requestModelAgentTurn(
   } catch (error) {
     throw new ModelServiceError(fetchFailureMessage(error));
   }
-  if (!response.ok || !response.body) throw new ModelServiceError("模型服务返回 HTTP " + response.status + "，请检查模型名称、工具调用支持、API 地址和 API Key。");
+  if (!response.ok) throw new ModelServiceError(modelHttpFailureMessage(response, true));
+  if (!response.body) throw new ModelServiceError("模型服务未返回流式响应内容。");
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -528,7 +540,8 @@ export async function requestModelAgentTurn(
     dispatch();
   } catch (error) {
     if (error instanceof ModelServiceError) throw error;
-    throw new ModelServiceError("读取模型流式响应失败，请稍后重试。");
+    console.error("Model stream read failed", error);
+    throw new ModelServiceError(fetchFailureMessage(error));
   } finally { reader.releaseLock(); }
 
   const toolCalls = [...calls.values()].map((call) => {

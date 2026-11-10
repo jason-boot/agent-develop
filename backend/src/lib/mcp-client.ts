@@ -3,7 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { fetch as undiciFetch, ProxyAgent } from "undici";
 
-export async function connectUsageMcpClient(endpoint: URL, bearerToken?: string) {
+export async function connectRemoteMcpClient(endpoint: URL, bearerToken?: string) {
   const client = new Client({ name: "usage-copilot-agent", version: "1.0.0" });
   const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
   const proxyAgent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
@@ -28,7 +28,7 @@ export async function connectUsageMcpClient(endpoint: URL, bearerToken?: string)
   };
 }
 
-export async function connectLocalUsageMcpClient(input: { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }) {
+export async function connectLocalMcpClient(input: { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }) {
   if (process.env.LITTLE_SUNSHINE_RUNTIME !== "desktop") throw new Error("本地命令 MCP 只能在 Desktop 版中运行。");
   const client = new Client({ name: "usage-copilot-agent", version: "1.0.0" });
   const transport = new StdioClientTransport({
@@ -47,7 +47,7 @@ export async function connectLocalUsageMcpClient(input: { command: string; args?
   return { client, close: async () => { await Promise.allSettled([client.close()]); } };
 }
 
-export async function callUsageMcpTool(client: Client, name: string, args: Record<string, unknown> = {}) {
+export async function callMcpTool(client: Client, name: string, args: Record<string, unknown> = {}) {
   const result = await client.callTool({ name, arguments: args });
   if (result.isError) {
     const blocks = result.content as Array<{ type: string; text?: string }>;

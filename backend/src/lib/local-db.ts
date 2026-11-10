@@ -11,7 +11,7 @@ export type StoredVideoGenerationTask = { id: string; userId: number; conversati
 
 const userContext = new AsyncLocalStorage<number>();
 export function withUserContext<T>(userId: number, callback: () => T): T { return userContext.run(userId, callback); }
-function currentUserId() { const userId = userContext.getStore(); if (!userId) throw new Error("需要登录后才能访问用户数据。"); return userId; }
+export function currentUserId() { const userId = userContext.getStore(); if (!userId) throw new Error("需要登录后才能访问用户数据。"); return userId; }
 
 declare global {
   // eslint-disable-next-line no-var
@@ -302,6 +302,39 @@ async function getProvider() {
   return (await readDatabaseConfig()).provider || "sqlite";
 }
 
+export async function saveBrowserBridgeSession(userId: number, tokenHash: string) {
+  const key = `browser_bridge_session:${userId}`;
+  const value = JSON.stringify({ tokenHash });
+  if (await getProvider() === "mysql") {
+    await (await getMysqlPool()).execute(
+      "INSERT INTO app_metadata (metadata_key, metadata_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE metadata_value = VALUES(metadata_value)",
+      [key, value],
+    );
+    return;
+  }
+  getDatabase().prepare("INSERT INTO app_metadata (metadata_key, metadata_value) VALUES (?, ?) ON CONFLICT(metadata_key) DO UPDATE SET metadata_value = excluded.metadata_value").run(key, value);
+}
+
+export async function findBrowserBridgeSession(tokenHash: string): Promise<{ userId: number } | null> {
+  let rows: Array<{ metadata_key: string; metadata_value: string }>;
+  if (await getProvider() === "mysql") {
+    const [result] = await (await getMysqlPool()).execute("SELECT metadata_key, metadata_value FROM app_metadata WHERE metadata_key LIKE 'browser_bridge_session:%'");
+    rows = result as typeof rows;
+  } else {
+    rows = getDatabase().prepare("SELECT metadata_key, metadata_value FROM app_metadata WHERE metadata_key LIKE 'browser_bridge_session:%'").all() as typeof rows;
+  }
+  for (const row of rows) {
+    try {
+      const value = JSON.parse(row.metadata_value) as { tokenHash?: unknown };
+      if (value.tokenHash !== tokenHash) continue;
+      const userId = Number(row.metadata_key.slice("browser_bridge_session:".length));
+      if (!Number.isSafeInteger(userId) || userId <= 0) return null;
+      return { userId };
+    } catch { /* Ignore unrelated or malformed app metadata. */ }
+  }
+  return null;
+}
+
 export type AppUser = { id: number; username: string; passwordHash: string; passwordSalt: string; isActive: boolean; tokenVersion: number; createdAt: number };
 export type UserIdentity = { provider: string; providerUserId: string; providerUsername: string; providerDisplayName: string; avatarUrl: string; createdAt: number };
 
@@ -586,7 +619,8 @@ export async function writeModelConfigStore(store: { models: Array<{ id: string;
 
 export async function readExternalMcpConfig() {
   const mapRow = (row: { id: string; name: string; transport: string | null; url: string; token: string; command: string | null; argsJson: string | null; envJson: string | null; cwd: string | null; enabled: number; disabledToolsJson: string; allowedToolsJson: string }) => ({
-    id: row.id, name: row.name, transport: row.transport === "stdio" ? "stdio" as const : "http" as const, url: row.url || "", token: row.token || "",
+    id: row.id, name: row.name, transport: row.transport === "stdio" ? "stdio" as const : row.transport === "bridge" ? "bridge" as const : "http" as const, url: row.url || "", token: row.token || "",
+    ...(row.transport === "bridge" && row.url?.startsWith("bridge://") ? { bridgeServerId: row.url.slice("bridge://".length) } : {}),
     command: row.command || "", args: JSON.parse(row.argsJson || "[]") as string[], env: JSON.parse(row.envJson || "{}") as Record<string, string>, cwd: row.cwd || "",
     enabled: Boolean(row.enabled), disabledTools: JSON.parse(row.disabledToolsJson) as string[], allowedTools: JSON.parse(row.allowedToolsJson) as string[],
   });
@@ -600,7 +634,7 @@ export async function readExternalMcpConfig() {
   return { servers: rows.map(mapRow) };
 }
 
-export async function writeExternalMcpConfig(store: { servers: Array<{ id: string; name: string; transport: "http" | "stdio"; url: string; token: string; command: string; args: string[]; env: Record<string, string>; cwd: string; enabled: boolean; disabledTools: string[]; allowedTools: string[] }> }) {
+export async function writeExternalMcpConfig(store: { servers: Array<{ id: string; name: string; transport: "http" | "stdio" | "bridge"; url: string; token: string; command: string; args: string[]; env: Record<string, string>; cwd: string; bridgeServerId?: string; enabled: boolean; disabledTools: string[]; allowedTools: string[] }> }) {
   const insertSql = "INSERT INTO external_mcp_servers (id, user_id, name, transport_type, url, token, command, args_json, env_json, cwd, enabled, disabled_tools_json, allowed_tools_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
   const values = (server: typeof store.servers[number]) => [server.id, currentUserId(), server.name, server.transport, server.url, server.token, server.command, JSON.stringify(server.args), JSON.stringify(server.env), server.cwd, server.enabled ? 1 : 0, JSON.stringify(server.disabledTools), JSON.stringify(server.allowedTools)];
   if (await getProvider() === "mysql") {

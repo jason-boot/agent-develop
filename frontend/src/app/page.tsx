@@ -14,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { diffLines } from "diff";
-import { ArrowDown, ArrowUp, ChevronDown, Download, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Plus, Trash2, TriangleAlert, UserRound, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, Copy, Download, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Plus, RefreshCw, Trash2, TriangleAlert, UserRound, Wrench, X } from "lucide-react";
 
 type ImageAttachment = { id: string; name: string; mimeType: "image/jpeg" | "image/png" | "image/webp"; dataUrl: string };
 type Message = { role: "assistant" | "user"; content: string; images?: ImageAttachment[]; generatedImages?: string[]; result?: ChatReply; projectId?: string; error?: boolean };
@@ -26,6 +26,14 @@ const formatDateTime = (timestamp?: number) => {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 };
+function compareVersions(left: string, right: string) {
+  const parse = (version: string) => version.split(".").map((part) => Number(part));
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  if (leftParts.length !== 3 || rightParts.length !== 3 || [...leftParts, ...rightParts].some((part) => !Number.isInteger(part) || part < 0)) return null;
+  for (let index = 0; index < 3; index += 1) if (leftParts[index] !== rightParts[index]) return leftParts[index] > rightParts[index] ? 1 : -1;
+  return 0;
+}
 type LocalProject = { id: string; name: string };
 type ModelProtocol = "chat" | "messages" | "responses";
 type ImageGenerationProviderId = "agnes" | "openai" | "qwen";
@@ -52,7 +60,44 @@ type BailianRegion = "beijing" | "singapore" | "hong-kong" | "tokyo" | "frankfur
 type BailianVideoRegion = BailianRegion;
 type VideoGenerationProfile = { enabled: boolean; provider: "aliyun-bailian"; region: BailianVideoRegion; workspaceId: string; model: "wan3.0-video" | "wan3.0-video-prime"; resolution: "480P" | "720P" | "1080P"; duration: number; hasApiKey: boolean; baseUrl: string };
 type McpTool = { name: string; title?: string; description?: string; enabled: boolean; readOnly?: boolean; destructive?: boolean; manuallyAllowed?: boolean; canEnable?: boolean };
-type ExternalMcpServer = { id: string; name: string; transport: "http" | "stdio"; url: string; command: string; args: string[]; cwd: string; envKeys: string[]; enabled: boolean; hasToken: boolean; hasEnv: boolean };
+type InternalMcpEntry = { id: string; name: string; description: string; url: string };
+type BrowserMcpStatus = { id: string; configured: boolean; connected: boolean; toolCount: number; installSource?: string; installDirectory?: string; packageName?: string; installed?: boolean; installedVersion?: string; error?: string };
+type ExternalMcpServer = { id: string; name: string; transport: "http" | "stdio" | "bridge"; bridgeServerId?: string; url: string; command: string; args: string[]; cwd: string; envKeys: string[]; enabled: boolean; hasToken: boolean; hasEnv: boolean };
+const builtInInternalMcps: InternalMcpEntry[] = [
+  { id: "mysql", name: "MySQL MCP", description: "连接本机 MySQL，只读查看表结构并查询数据。", url: "http://127.0.0.1:8931/mysql-mcp" },
+  { id: "playwright", name: "Playwright MCP", description: "操作浏览器，打开网页、点击元素、填写表单并读取页面内容。", url: "http://127.0.0.1:8931/mcp" },
+  { id: "@modelcontextprotocol/server-filesystem", name: "Filesystem MCP", description: "访问你指定的本机目录；配置时需要填写允许访问的目录。", url: "bridge://@modelcontextprotocol/server-filesystem" },
+  { id: "@modelcontextprotocol/server-memory", name: "Memory MCP", description: "使用本机知识图谱保存和查询记忆。", url: "bridge://@modelcontextprotocol/server-memory" },
+  { id: "@modelcontextprotocol/server-sequential-thinking", name: "Sequential Thinking MCP", description: "将复杂问题拆成步骤，并支持修订和分支推理；当前版本需要 Node.js 24+。", url: "bridge://@modelcontextprotocol/server-sequential-thinking" },
+  { id: "@modelcontextprotocol/server-everything", name: "Everything MCP", description: "用于演示和测试 MCP 协议功能。", url: "bridge://@modelcontextprotocol/server-everything" },
+];
+const builtinLocalMcpPackages: Record<string, string> = {
+  "@modelcontextprotocol/server-filesystem": "@modelcontextprotocol/server-filesystem",
+  "@modelcontextprotocol/server-memory": "@modelcontextprotocol/server-memory",
+  "@modelcontextprotocol/server-sequential-thinking": "@modelcontextprotocol/server-sequential-thinking",
+  "@modelcontextprotocol/server-everything": "@modelcontextprotocol/server-everything",
+};
+function packageNameFromNpx(command: string, args: string[]) {
+  const commandName = command.split(/[\\/]/).pop()?.toLowerCase() || "";
+  let spec = "";
+  if (["npx", "npx.cmd", "npx.exe"].includes(commandName)) {
+    const yesIndex = args.findIndex((argument) => argument === "-y" || argument === "--yes");
+    spec = yesIndex >= 0 ? args[yesIndex + 1] || "" : args.find((argument) => argument.startsWith("@") || /^[a-zA-Z0-9._~-]+(?:@[^/].*)?$/.test(argument)) || "";
+  } else {
+    const commandLine = [command, ...args].join(" ");
+    const match = /\bnpx(?:\.cmd)?\s+(?:(?:-y|--yes)\s+)?(?:"([^"]+)"|'([^']+)'|([^\s"'&|]+))/i.exec(commandLine);
+    spec = match?.[1] || match?.[2] || match?.[3] || "";
+  }
+  const scoped = spec.startsWith("@");
+  const versionSeparator = scoped ? spec.indexOf("@", spec.indexOf("/") + 1) : spec.indexOf("@");
+  const packageName = versionSeparator < 0 ? spec : spec.slice(0, versionSeparator);
+  return /^(@[a-zA-Z0-9._~-]+\/[a-zA-Z0-9._~-]+|[a-zA-Z0-9._~-]+)$/.test(packageName) ? packageName : "";
+}
+function titleFromNpmPackageName(packageName: string) {
+  const parts = packageName.split("/");
+  const last = parts.at(-1) || packageName;
+  return last.toLowerCase() === "mcp" ? (parts.at(-2) || last).replace(/^@/, "") : last;
+}
 type StoredProjectDirectory = { id: string; name: string; handle: FileSystemDirectoryHandle; ownerId?: number; storageKey?: string };
 
 async function readApiJson<T>(response: Response): Promise<T> {
@@ -180,14 +225,14 @@ function ToolTraceList({ traces }: { traces: ToolTrace[] }) {
     return items;
   }, []);
 
-  return <div className="tool-trace">
-    <div className="trace-heading"><span className="trace-check">✓</span><strong>执行步骤</strong><span>{grouped.length} 项</span></div>
+  return <details className="tool-trace">
+    <summary className="trace-heading"><span className="trace-check">✓</span><strong>执行步骤</strong><span className="trace-step-count">{grouped.length} 项</span><ChevronDown className="trace-toggle-icon" aria-hidden="true" /></summary>
     {grouped.map((trace, index) => <div className="trace-tool" key={`${trace.tool}-${index}`}>
       <span className="trace-tool-icon">⌘</span>
       <div className="trace-tool-copy"><strong>{trace.label}{trace.count > 1 && <span className="trace-count" aria-label={`连续调用 ${trace.count} 次`}>{trace.count > 99 ? "99+" : trace.count}</span>}</strong><small>{trace.detail}</small></div>
       <em>完成</em>
     </div>)}
-  </div>;
+  </details>;
 }
 
 function ProjectFileDiff({ change }: { change: ProjectFileChange }) {
@@ -595,8 +640,8 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [modelLimitNoticeOpen, setModelLimitNoticeOpen] = useState(false);
   const [modelToDelete, setModelToDelete] = useState<ModelProfile | null>(null);
   const [modelDeleting, setModelDeleting] = useState(false);
-  const [mcpModalOpen, setMcpModalOpen] = useState(false);
-  const [mcpManagerCategory, setMcpManagerCategory] = useState<"image-generation" | "video-generation" | "web-search" | "external">("image-generation");
+  const [mcpPageOpen, setMcpPageOpen] = useState(false);
+  const [mcpManagerCategory, setMcpManagerCategory] = useState<"image-generation" | "video-generation" | "web-search" | "internal-tools" | "external">("image-generation");
   const [externalMcpRuntime, setExternalMcpRuntime] = useState<"web" | "desktop">("web");
   const [externalMcpServers, setExternalMcpServers] = useState<ExternalMcpServer[]>([]);
   const [externalMcpTools, setExternalMcpTools] = useState<Record<string, McpTool[]>>({});
@@ -616,8 +661,55 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [externalMcpTesting, setExternalMcpTesting] = useState(false);
   const [externalMcpSaving, setExternalMcpSaving] = useState(false);
   const [externalMcpTested, setExternalMcpTested] = useState(false);
+  const [externalMcpEditingServer, setExternalMcpEditingServer] = useState<ExternalMcpServer | null>(null);
   const [externalMcpPreview, setExternalMcpPreview] = useState<McpTool[]>([]);
   const [externalMcpExpandedId, setExternalMcpExpandedId] = useState("");
+  const [internalMcpFetching, setInternalMcpFetching] = useState(false);
+  const internalMcpLoadStarted = useRef(false);
+  const [internalMcpUpdating, setInternalMcpUpdating] = useState("");
+  const [internalMcps, setInternalMcps] = useState<InternalMcpEntry[]>(builtInInternalMcps);
+  const [internalMcpToolsDialogServer, setInternalMcpToolsDialogServer] = useState<InternalMcpEntry | null>(null);
+  const [internalMcpToolsDialogConfig, setInternalMcpToolsDialogConfig] = useState<ExternalMcpServer | null>(null);
+  const [internalMcpDialogTools, setInternalMcpDialogTools] = useState<McpTool[]>([]);
+  const [internalMcpDialogLoading, setInternalMcpDialogLoading] = useState(false);
+  const [internalMcpDialogError, setInternalMcpDialogError] = useState("");
+  const [internalMcpToolUpdating, setInternalMcpToolUpdating] = useState("");
+  const [browserBridgeConnected, setBrowserBridgeConnected] = useState(false);
+  const [browserBridgePanelOpen, setBrowserBridgePanelOpen] = useState(false);
+  const [browserBridgeInstallDirectory, setBrowserBridgeInstallDirectory] = useState("");
+  const [browserBridgeVersion, setBrowserBridgeVersion] = useState("");
+  const [latestBrowserBridgeVersion, setLatestBrowserBridgeVersion] = useState("");
+  const [browserBridgePairingCode, setBrowserBridgePairingCode] = useState("");
+  const [browserBridgeAppUrl, setBrowserBridgeAppUrl] = useState("");
+  const [browserBridgeCopied, setBrowserBridgeCopied] = useState<"url" | "pairing" | "">("");
+  const [browserBridgeInstallOpen, setBrowserBridgeInstallOpen] = useState(false);
+  const [browserBridgePairingError, setBrowserBridgePairingError] = useState("");
+  const [browserBridgeCallTimeoutSeconds, setBrowserBridgeCallTimeoutSeconds] = useState("30");
+  const [browserBridgeCallTimeoutSaving, setBrowserBridgeCallTimeoutSaving] = useState(false);
+  const [browserBridgeCallTimeoutMessage, setBrowserBridgeCallTimeoutMessage] = useState("");
+  const browserBridgeTimeoutLoaded = useRef(false);
+  const [browserMcpStatuses, setBrowserMcpStatuses] = useState<BrowserMcpStatus[]>([]);
+  const [hiddenMcpPluginIds, setHiddenMcpPluginIds] = useState<string[]>([]);
+  const [mysqlMcpInstalling, setMysqlMcpInstalling] = useState(false);
+  const [mysqlMcpInstallError, setMysqlMcpInstallError] = useState("");
+  const [playwrightMcpInstalling, setPlaywrightMcpInstalling] = useState(false);
+  const [playwrightMcpInstallError, setPlaywrightMcpInstallError] = useState("");
+  const [builtinMcpInstallingId, setBuiltinMcpInstallingId] = useState("");
+  const [builtinMcpInstallErrors, setBuiltinMcpInstallErrors] = useState<Record<string, string>>({});
+  const [mcpUninstallingId, setMcpUninstallingId] = useState("");
+  const [mcpUninstallErrors, setMcpUninstallErrors] = useState<Record<string, string>>({});
+  const [localMcpToUninstall, setLocalMcpToUninstall] = useState<InternalMcpEntry | null>(null);
+  const [localMcpConfigOpen, setLocalMcpConfigOpen] = useState(false);
+  const [localMcpConfigServer, setLocalMcpConfigServer] = useState<InternalMcpEntry | null>(null);
+  const [localMcpDisplayName, setLocalMcpDisplayName] = useState("");
+  const [localMcpConfigConfigured, setLocalMcpConfigConfigured] = useState(false);
+  const [localMcpCommand, setLocalMcpCommand] = useState("");
+  const [localMcpArgsJson, setLocalMcpArgsJson] = useState("[]");
+  const [localMcpEnvJson, setLocalMcpEnvJson] = useState("{}");
+  const [localMcpCwd, setLocalMcpCwd] = useState("");
+  const [localMcpConfigLoading, setLocalMcpConfigLoading] = useState(false);
+  const [localMcpConfigBusy, setLocalMcpConfigBusy] = useState(false);
+  const [localMcpConfigError, setLocalMcpConfigError] = useState("");
   const selectedModel = models.find((model) => model.id === selectedModelId);
   const agnesBuiltinModels = [
     { name: "Agnes 3.0 Flash", model: "agnes-3.0-flash" },
@@ -678,11 +770,18 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
         if (!response.ok) throw new Error(data.error || "读取会话失败。");
         const saved = data.conversations || [];
         setConversations(saved);
+        const restoreMcpPage = !startFreshSession && window.sessionStorage.getItem("little-sunshine-current-page") === "mcp";
+        const storedMcpCategory = window.sessionStorage.getItem("little-sunshine-mcp-category");
+        const restoreMcpCategory = storedMcpCategory === "image-generation" || storedMcpCategory === "video-generation" || storedMcpCategory === "web-search" || storedMcpCategory === "internal-tools" || storedMcpCategory === "external" ? storedMcpCategory : "image-generation";
         if (startFreshSession) {
+          window.sessionStorage.removeItem("little-sunshine-current-page");
           setActiveConversationId("");
           setConversationProjectId("");
           setProjectConversationMode(false);
           setMessages([{ role: "assistant", content: welcome }]);
+        } else if (restoreMcpPage) {
+          setMcpManagerCategory(restoreMcpCategory);
+          void openMcpTools();
         } else if (saved.length) {
           const detailResponse = await fetch(`/api/conversations/${encodeURIComponent(saved[0].id)}`);
           const detail = await readApiJson<{ conversation?: Conversation; error?: string }>(detailResponse);
@@ -794,6 +893,8 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
 
   function startNewConversation() {
     if (loading) return;
+    window.sessionStorage.removeItem("little-sunshine-current-page");
+    setMcpPageOpen(false);
     setActiveConversationId("");
     setSelectedProjectId("");
     setConversationProjectId("");
@@ -834,6 +935,8 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       setProjectError(message);
       return;
     }
+    window.sessionStorage.removeItem("little-sunshine-current-page");
+    setMcpPageOpen(false);
     setSelectedProjectId(projectId);
     setActiveConversationId("");
     setConversationProjectId(projectId);
@@ -899,7 +1002,10 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   }
 
   async function openConversation(conversation: Conversation) {
-    if (loading || conversation.id === activeConversationId) return;
+    if (loading) return;
+    window.sessionStorage.removeItem("little-sunshine-current-page");
+    setMcpPageOpen(false);
+    if (conversation.id === activeConversationId) return;
     try {
       const response = await fetch(`/api/conversations/${encodeURIComponent(conversation.id)}`);
       const data = await readApiJson<{ conversation?: Conversation; error?: string }>(response);
@@ -1415,11 +1521,12 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   }
 
   async function openMcpTools() {
-    setMcpModalOpen(true);
+    window.sessionStorage.setItem("little-sunshine-current-page", "mcp");
+    setMcpPageOpen(true);
     try {
       const [serverResponse, imageResponse, videoResponse, webSearchResponse] = await Promise.all([fetch("/api/mcp/servers"), fetch("/api/mcp/image-generation"), fetch("/api/mcp/video-generation"), fetch("/api/mcp/web-search")]);
       const serverData = await serverResponse.json() as { servers?: ExternalMcpServer[]; runtime?: "web" | "desktop"; error?: string };
-      if (!serverResponse.ok) throw new Error(serverData.error || "读取其他工具配置失败。");
+      if (!serverResponse.ok) throw new Error(serverData.error || "读取远程工具配置失败。");
       setExternalMcpServers(serverData.servers || []);
       setExternalMcpRuntime(serverData.runtime === "desktop" ? "desktop" : "web");
       if (imageResponse.ok) {
@@ -1428,8 +1535,13 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       if (videoResponse.ok) setVideoMcpSettings(await videoResponse.json() as VideoGenerationProfile);
       if (webSearchResponse.ok) setWebSearchSettings(await webSearchResponse.json() as WebSearchMcpProfile);
     } catch (e) {
-      setExternalMcpError(e instanceof Error ? e.message : "读取其他工具配置失败。");
+      setExternalMcpError(e instanceof Error ? e.message : "读取远程工具配置失败。");
     }
+  }
+
+  function selectMcpCategory(category: typeof mcpManagerCategory) {
+    window.sessionStorage.setItem("little-sunshine-mcp-category", category);
+    setMcpManagerCategory(category);
   }
 
   function openImageGenerationEditor(providerId: ImageGenerationProviderId) {
@@ -1518,9 +1630,10 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     finally { setWebSearchActivating(null); }
   }
 
-  function openExternalMcpEditor() {
-    setExternalMcpName(""); setExternalMcpUrl(""); setExternalMcpToken("");
-    setExternalMcpTransport("http"); setExternalMcpCommand(""); setExternalMcpArgsJson("[]"); setExternalMcpEnvJson("{}"); setExternalMcpCwd("");
+  function openExternalMcpEditor(server?: ExternalMcpServer) {
+    setExternalMcpEditingServer(server || null);
+    setExternalMcpName(server?.name || ""); setExternalMcpUrl(server?.transport === "http" ? server.url : ""); setExternalMcpToken("");
+    setExternalMcpTransport(server?.transport === "stdio" ? "stdio" : "http"); setExternalMcpCommand(server?.command || ""); setExternalMcpArgsJson(JSON.stringify(server?.args || [], null, 2)); setExternalMcpEnvJson("{}"); setExternalMcpCwd(server?.cwd || "");
     setExternalMcpTested(false); setExternalMcpPreview([]); setExternalMcpError("");
     setExternalMcpEditorOpen(true);
   }
@@ -1537,7 +1650,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     setExternalMcpTesting(true); setExternalMcpError(""); setExternalMcpTested(false);
     try {
       const connection = externalMcpTransport === "stdio" ? { transport: "stdio", ...localMcpDraft() } : { transport: "http", url: externalMcpUrl, token: externalMcpToken };
-      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "test", ...connection }) });
+      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "test", ...(externalMcpEditingServer ? { id: externalMcpEditingServer.id } : {}), ...connection }) });
       const data = await readApiJson<{ tools?: McpTool[]; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "MCP 连接测试失败。");
       setExternalMcpPreview(data.tools || []); setExternalMcpTested(true);
@@ -1549,12 +1662,13 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     setExternalMcpSaving(true); setExternalMcpError("");
     try {
       const connection = externalMcpTransport === "stdio" ? { transport: "stdio", ...localMcpDraft() } : { transport: "http", url: externalMcpUrl, token: externalMcpToken };
-      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save", name: externalMcpName, ...connection }) });
+      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save", ...(externalMcpEditingServer ? { id: externalMcpEditingServer.id } : {}), name: externalMcpName, ...connection }) });
       const data = await readApiJson<{ server?: ExternalMcpServer; error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || "添加 MCP 服务器失败。");
-      if (data.server) setExternalMcpServers((items) => [...items, data.server!]);
+      if (!response.ok) throw new Error(data.error || (externalMcpEditingServer ? "修改远程 MCP 配置失败。" : "添加远程 MCP 服务器失败。"));
+      if (data.server) setExternalMcpServers((items) => items.some((item) => item.id === data.server!.id) ? items.map((item) => item.id === data.server!.id ? data.server! : item) : [...items, data.server!]);
       setExternalMcpEditorOpen(false);
-    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "添加 MCP 服务器失败。"); }
+      setExternalMcpEditingServer(null);
+    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : externalMcpEditingServer ? "修改远程 MCP 配置失败。" : "添加远程 MCP 服务器失败。"); }
     finally { setExternalMcpSaving(false); }
   }
 
@@ -1563,10 +1677,353 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "inspect", id: server.id }) });
       const data = await readApiJson<{ tools?: McpTool[]; error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || "读取其他工具失败。");
+      if (!response.ok) throw new Error(data.error || "读取远程工具失败。");
       setExternalMcpTools((items) => ({ ...items, [server.id]: data.tools || [] }));
-    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "读取其他工具失败。"); }
+    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "读取远程工具失败。"); }
     finally { setExternalMcpLoading(""); }
+  }
+
+  async function fetchInternalMcpList() {
+    setInternalMcpFetching(true); setExternalMcpError("");
+    try {
+      const response = await fetch("/api/mcp/catalog", { cache: "no-store" });
+      const data = await readApiJson<{ mcps?: InternalMcpEntry[]; error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "获取 MCP 列表失败。");
+      const appMcps = data.mcps?.length ? data.mcps : builtInInternalMcps.slice(0, 2);
+      setInternalMcps([...appMcps, ...builtInInternalMcps.filter((entry) => entry.url.startsWith("bridge://") && !appMcps.some((item) => item.id === entry.id))]);
+    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "获取 MCP 列表失败。"); }
+    finally { setInternalMcpFetching(false); }
+  }
+
+  async function createBrowserPairing() {
+    setBrowserBridgePairingCode(""); setBrowserBridgePairingError("");
+    try {
+      const response = await fetch("/api/mcp/browser-bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create-pairing" }) });
+      const data = await readApiJson<{ code?: string; error?: string }>(response);
+      if (!response.ok || !data.code) throw new Error(data.error || "创建本机浏览器配对失败。");
+      setBrowserBridgePairingCode(data.code);
+    } catch (e) { setBrowserBridgePairingError(e instanceof Error ? e.message : "创建本机浏览器配对失败。"); }
+  }
+
+  async function saveBrowserBridgeCallTimeout() {
+    const seconds = Number(browserBridgeCallTimeoutSeconds);
+    if (!Number.isInteger(seconds) || seconds < 5 || seconds > 300) {
+      setBrowserBridgeCallTimeoutMessage("请输入 5 到 300 之间的整数秒。");
+      return;
+    }
+    setBrowserBridgeCallTimeoutSaving(true);
+    setBrowserBridgeCallTimeoutMessage("");
+    try {
+      const response = await fetch("/api/mcp/browser-bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save-call-timeout", seconds }) });
+      const data = await readApiJson<{ callTimeoutSeconds?: number; error?: string }>(response);
+      if (!response.ok || data.callTimeoutSeconds !== seconds) throw new Error(data.error || "保存本地工具超时失败。");
+      setBrowserBridgeCallTimeoutMessage("已保存");
+    } catch (e) {
+      setBrowserBridgeCallTimeoutMessage(e instanceof Error ? e.message : "保存本地工具超时失败。");
+    } finally { setBrowserBridgeCallTimeoutSaving(false); }
+  }
+
+  async function installMysqlMcp() {
+    if (mysqlMcpInstalling) return;
+    setMysqlMcpInstalling(true); setMysqlMcpInstallError("");
+    try {
+      const response = await fetch("/api/mcp/browser-bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mysql-mcp-install" }) });
+      const data = await readApiJson<{ installed?: boolean; installedVersion?: string; installDirectory?: string; mcpServers?: BrowserMcpStatus[]; error?: string }>(response);
+      if (!response.ok || !data.installed) throw new Error(data.error || "安装 MySQL MCP 失败。");
+      setBrowserMcpStatuses(data.mcpServers || []);
+    } catch (e) { setMysqlMcpInstallError(e instanceof Error ? e.message : "安装 MySQL MCP 失败。"); }
+    finally { setMysqlMcpInstalling(false); }
+  }
+
+  async function installPlaywrightMcp() {
+    if (playwrightMcpInstalling) return;
+    setPlaywrightMcpInstalling(true); setPlaywrightMcpInstallError("");
+    try {
+      const response = await fetch("/api/mcp/browser-bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "playwright-mcp-install" }) });
+      const data = await readApiJson<{ installed?: boolean; installedVersion?: string; installDirectory?: string; mcpServers?: BrowserMcpStatus[]; error?: string }>(response);
+      if (!response.ok || !data.installed) throw new Error(data.error || "安装 Playwright MCP 失败。");
+      setBrowserMcpStatuses(data.mcpServers || []);
+    } catch (e) { setPlaywrightMcpInstallError(e instanceof Error ? e.message : "安装 Playwright MCP 失败。"); }
+    finally { setPlaywrightMcpInstalling(false); }
+  }
+
+  async function installBuiltinLocalMcp(server: InternalMcpEntry) {
+    if (!builtinLocalMcpPackages[server.id] || builtinMcpInstallingId) return;
+    setBuiltinMcpInstallingId(server.id);
+    setBuiltinMcpInstallErrors((items) => ({ ...items, [server.id]: "" }));
+    try {
+      const response = await fetch("/api/mcp/browser-bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "builtin-mcp-install", serverId: server.id }) });
+      const data = await readApiJson<{ installed?: boolean; mcpServers?: BrowserMcpStatus[]; error?: string }>(response);
+      if (!response.ok || !data.installed) throw new Error(data.error || `安装 ${server.name} 失败。`);
+      setBrowserMcpStatuses(data.mcpServers || []);
+    } catch (error) {
+      setBuiltinMcpInstallErrors((items) => ({ ...items, [server.id]: error instanceof Error ? error.message : `安装 ${server.name} 失败。` }));
+    } finally { setBuiltinMcpInstallingId(""); }
+  }
+
+  async function uninstallLocalMcp(server: InternalMcpEntry) {
+    if (mcpUninstallingId) return;
+    setMcpUninstallingId(server.id);
+    setMcpUninstallErrors((current) => ({ ...current, [server.id]: "" }));
+    try {
+      const response = await fetch("/api/mcp/browser-bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "local-mcp-uninstall", serverId: server.id }) });
+      const data = await readApiJson<{ uninstalled?: boolean; removedServerId?: string; mcpServers?: BrowserMcpStatus[]; error?: string }>(response);
+      if (!response.ok || !data.uninstalled) throw new Error(data.error || `卸载 ${server.name} 失败。`);
+      setBrowserMcpStatuses(data.mcpServers || []);
+      setExternalMcpServers((items) => items.filter((item) => item.transport !== "bridge" || item.bridgeServerId !== (data.removedServerId || server.id)));
+      setExternalMcpTools((items) => {
+        const next = { ...items };
+        for (const item of externalMcpServers.filter((entry) => entry.transport === "bridge" && entry.bridgeServerId === (data.removedServerId || server.id))) delete next[item.id];
+        return next;
+      });
+    } catch (e) {
+      setMcpUninstallErrors((current) => ({ ...current, [server.id]: e instanceof Error ? e.message : `卸载 ${server.name} 失败。` }));
+    } finally { setMcpUninstallingId(""); setLocalMcpToUninstall(null); }
+  }
+
+  async function copyBrowserBridgeValue(kind: "url" | "pairing", value: string) {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setBrowserBridgeCopied(kind);
+      window.setTimeout(() => setBrowserBridgeCopied((current) => current === kind ? "" : current), 1600);
+    } catch { setBrowserBridgePairingError("复制失败，请检查浏览器的剪贴板权限。"); }
+  }
+
+  useEffect(() => {
+    if (mcpPageOpen && mcpManagerCategory === "internal-tools" && !browserBridgeConnected && !browserBridgePairingCode && !browserBridgePairingError) {
+      void createBrowserPairing();
+    }
+  }, [mcpPageOpen, mcpManagerCategory, browserBridgeConnected, browserBridgePairingCode, browserBridgePairingError]);
+
+  useEffect(() => {
+    setBrowserBridgeAppUrl(window.location.origin);
+  }, []);
+
+  useEffect(() => {
+    if (!mcpPageOpen || mcpManagerCategory !== "internal-tools") return;
+    if (!internalMcpLoadStarted.current) {
+      internalMcpLoadStarted.current = true;
+      void fetchInternalMcpList();
+    }
+    let active = true;
+    const update = async () => {
+      try {
+        const response = await fetch("/api/mcp/browser-bridge", { cache: "no-store" });
+        if (response.ok && active) {
+          const data = await response.json() as { connected?: boolean; mcpServers?: BrowserMcpStatus[]; hiddenMcpPluginIds?: string[]; installDirectory?: string; bridgeVersion?: string; latestBridgeVersion?: string; callTimeoutSeconds?: number };
+          setBrowserBridgeConnected(Boolean(data.connected));
+          setBrowserBridgeInstallDirectory(data.connected ? data.installDirectory || "" : "");
+          setBrowserBridgeVersion(data.connected ? data.bridgeVersion || "" : "");
+          setLatestBrowserBridgeVersion(data.latestBridgeVersion || "");
+          setBrowserMcpStatuses(data.mcpServers || []);
+          setHiddenMcpPluginIds(data.hiddenMcpPluginIds || []);
+          if (!browserBridgeTimeoutLoaded.current && Number.isInteger(data.callTimeoutSeconds)) {
+            setBrowserBridgeCallTimeoutSeconds(String(data.callTimeoutSeconds));
+            browserBridgeTimeoutLoaded.current = true;
+          }
+          if (data.connected) setBrowserBridgePairingCode("");
+        }
+      } catch { /* Connection status is shown as disconnected. */ }
+    };
+    void update();
+    const timer = setInterval(() => void update(), 5000);
+    return () => { active = false; clearInterval(timer); };
+  }, [mcpPageOpen, mcpManagerCategory]);
+
+  function defaultLocalMcpConfig(serverId: string) {
+    const windows = /Windows/i.test(navigator.userAgent);
+    if (serverId === "mysql") {
+      const mysqlStatus = browserMcpStatuses.find((status) => status.id === "mysql");
+      const installed = Boolean(mysqlStatus?.installed);
+      const baseDirectory = browserBridgeInstallDirectory.replace(/[\\/]+$/, "");
+      const pluginDirectory = mysqlStatus?.installDirectory || (baseDirectory ? `${baseDirectory}${windows ? "\\" : "/"}plugins${windows ? "\\" : "/"}@futuretea${windows ? "\\" : "/"}mysql-mcp-server` : "");
+      if (installed) return {
+        command: windows ? "cmd.exe" : `${pluginDirectory}/node_modules/.bin/mysql-mcp-server`,
+        args: windows ? ["/d", "/c", ".\\node_modules\\.bin\\mysql-mcp-server.cmd"] : [],
+        env: { MYSQL_DSN: "" },
+        cwd: pluginDirectory,
+      };
+      return {
+        command: windows ? "cmd.exe" : "npx",
+        args: windows ? ["/d", "/s", "/c", "npx -y @futuretea/mysql-mcp-server@latest"] : ["-y", "@futuretea/mysql-mcp-server@latest"],
+        env: { MYSQL_DSN: "" },
+        cwd: "",
+      };
+    }
+    if (serverId === "playwright") {
+      const baseDirectory = browserBridgeInstallDirectory.replace(/[\\/]+$/, "");
+      const separator = windows ? "\\" : "/";
+      const playwrightStatus = browserMcpStatuses.find((status) => status.id === "playwright");
+      const pluginDirectory = playwrightStatus?.installDirectory || (baseDirectory ? `${baseDirectory}${separator}plugins${separator}@playwright${separator}mcp` : "");
+      return {
+        command: pluginDirectory ? "node" : windows ? "cmd.exe" : "npx",
+        args: pluginDirectory ? ["node_modules/@playwright/mcp/cli.js"] : windows ? ["/d", "/s", "/c", "npx -y @playwright/mcp"] : ["-y", "@playwright/mcp"],
+        env: {},
+        cwd: pluginDirectory,
+      };
+    }
+    const sharedPackageName = browserMcpStatuses.find((status) => status.id === serverId && status.installed)?.packageName;
+    if (sharedPackageName) return {
+      command: windows ? "cmd.exe" : "npx",
+      args: windows ? ["/d", "/s", "/c", `npx -y ${sharedPackageName}@latest`] : ["-y", `${sharedPackageName}@latest`],
+      env: {},
+      cwd: "",
+    };
+    return { command: "", args: [], env: {}, cwd: "" };
+  }
+
+  function addLocalMcp() {
+    const id = crypto.randomUUID();
+    void openLocalMcpConfig({ id, name: "", description: "本机 stdio MCP", url: `bridge://${id}` });
+  }
+
+  async function openLocalMcpConfig(server: InternalMcpEntry) {
+    setLocalMcpConfigServer(server); setLocalMcpDisplayName(server.name); setLocalMcpConfigError(""); setLocalMcpConfigConfigured(false); setLocalMcpConfigOpen(true); setLocalMcpConfigLoading(true);
+    try {
+      const response = await fetch("/api/mcp/browser-bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "local-mcp-config-get", serverId: server.id }) });
+      const data = await readApiJson<{ configured?: boolean; command?: string; args?: string[]; env?: Record<string, string>; cwd?: string; error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "读取本机 MCP 配置失败。");
+      const fallback = defaultLocalMcpConfig(server.id);
+      const savedArgs = data.configured ? data.args || fallback.args : fallback.args;
+      const args = server.id === "playwright" ? savedArgs.map((argument) => argument.replace(/\\/g, "/").endsWith("/plugins/playwright/node_modules/@playwright/mcp/cli.js") ? "node_modules/@playwright/mcp/cli.js" : argument) : savedArgs;
+      const env: Record<string, string> = data.configured ? { ...(data.env || {}) } : fallback.env;
+      if (server.id === "mysql" && data.configured && !("MYSQL_DSN" in env)) env.MYSQL_DSN = "";
+      setLocalMcpConfigConfigured(Boolean(data.configured));
+      setLocalMcpCommand(data.configured ? data.command || fallback.command : fallback.command);
+      setLocalMcpArgsJson(JSON.stringify(args, null, 2));
+      setLocalMcpEnvJson(JSON.stringify(env, null, 2));
+      setLocalMcpCwd(data.configured ? data.cwd || "" : fallback.cwd);
+    } catch (e) { setLocalMcpConfigError(e instanceof Error ? e.message : "读取本机 MCP 配置失败。"); }
+    finally { setLocalMcpConfigLoading(false); }
+  }
+
+  async function saveLocalMcpConfig() {
+    if (!localMcpConfigServer) return;
+    setLocalMcpConfigBusy(true); setLocalMcpConfigError("");
+    try {
+      const args = JSON.parse(localMcpArgsJson) as unknown;
+      const env = JSON.parse(localMcpEnvJson) as unknown;
+      if (!Array.isArray(args) || args.some((item) => typeof item !== "string")) throw new Error("命令参数必须是字符串 JSON 数组。");
+      if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((value) => typeof value !== "string")) throw new Error("环境变量必须是键值均为字符串的 JSON 对象。");
+      const previousServerId = localMcpConfigServer.id;
+      const packageName = previousServerId === "mysql" || previousServerId === "playwright" ? "" : packageNameFromNpx(localMcpCommand, args as string[]);
+      const requestedServerId = packageName && packageName !== "mysql" && packageName !== "playwright" ? packageName : previousServerId;
+      const response = await fetch("/api/mcp/browser-bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "local-mcp-configure", serverId: requestedServerId, ...(requestedServerId !== previousServerId ? { previousServerId } : {}), config: { command: localMcpCommand, args, env, cwd: localMcpCwd } }) });
+      const data = await readApiJson<{ configured?: boolean; serverId?: string; toolCount?: number; mcpServers?: BrowserMcpStatus[]; error?: string }>(response);
+      if (!response.ok || !data.configured) throw new Error(data.error || "启动本机 MCP 失败。");
+      setLocalMcpConfigConfigured(true); setBrowserMcpStatuses(data.mcpServers || []);
+      const configuredServerId = data.serverId || requestedServerId;
+      let configuredBridgeServer: ExternalMcpServer | undefined;
+      if (localMcpConfigServer.url.startsWith("bridge://")) {
+        const serverResponse = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save-bridge", name: localMcpDisplayName, bridgeServerId: configuredServerId, ...(configuredServerId !== previousServerId ? { previousBridgeServerId: previousServerId } : {}) }) });
+        const serverData = await readApiJson<{ server?: ExternalMcpServer; error?: string }>(serverResponse);
+        if (!serverResponse.ok || !serverData.server) throw new Error(serverData.error || "保存本地 MCP 信息失败。");
+        configuredBridgeServer = serverData.server;
+        setExternalMcpServers((items) => {
+          const withoutPrevious = items.filter((item) => item.transport !== "bridge" || item.bridgeServerId !== previousServerId || item.id === serverData.server!.id);
+          return withoutPrevious.some((item) => item.id === serverData.server!.id) ? withoutPrevious.map((item) => item.id === serverData.server!.id ? serverData.server! : item) : [...withoutPrevious, serverData.server!];
+        });
+        setHiddenMcpPluginIds((items) => items.filter((id) => id !== previousServerId && id !== configuredServerId));
+      }
+      setLocalMcpConfigOpen(false);
+      const configuredLocalMcpServer = configuredServerId === localMcpConfigServer.id ? localMcpConfigServer : { ...localMcpConfigServer, id: configuredServerId, url: `bridge://${configuredServerId}` };
+      await openInternalMcpTools(configuredLocalMcpServer, configuredBridgeServer);
+    } catch (e) { setLocalMcpConfigError(e instanceof Error ? e.message : "启动本机 MCP 失败。"); }
+    finally { setLocalMcpConfigBusy(false); }
+  }
+
+  async function removeLocalMcpConfig() {
+    if (!localMcpConfigServer) return;
+    setLocalMcpConfigBusy(true); setLocalMcpConfigError("");
+    try {
+      if (localMcpConfigServer.url.startsWith("bridge://")) {
+        const configured = externalMcpServers.find((item) => item.transport === "bridge" && item.bridgeServerId === localMcpConfigServer.id);
+        if (configured) {
+          const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: configured.id }) });
+          const data = await readApiJson<{ deleted?: boolean; error?: string }>(response);
+          if (!response.ok || !data.deleted) throw new Error(data.error || "移除本机 MCP 配置失败。");
+          setExternalMcpServers((items) => items.filter((item) => item.id !== configured.id));
+          setBrowserMcpStatuses((items) => items.filter((item) => item.id !== localMcpConfigServer.id));
+          setLocalMcpConfigConfigured(false); setLocalMcpConfigOpen(false); return;
+        }
+      }
+      const response = await fetch("/api/mcp/browser-bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "local-mcp-remove", serverId: localMcpConfigServer.id }) });
+      const data = await readApiJson<{ removed?: boolean; mcpServers?: BrowserMcpStatus[]; error?: string }>(response);
+      if (!response.ok || !data.removed) throw new Error(data.error || "移除本机 MCP 配置失败。");
+      setBrowserMcpStatuses(data.mcpServers || []); setLocalMcpConfigConfigured(false); setLocalMcpConfigOpen(false);
+    } catch (e) { setLocalMcpConfigError(e instanceof Error ? e.message : "移除本机 MCP 配置失败。"); }
+    finally { setLocalMcpConfigBusy(false); }
+  }
+
+  function findInternalMcpConfig(server: InternalMcpEntry) {
+    return server.url.startsWith("bridge://")
+      ? externalMcpServers.find((item) => item.transport === "bridge" && item.bridgeServerId === server.id)
+      : externalMcpServers.find((item) => item.transport === "http" && item.url === server.url);
+  }
+
+  async function openInternalMcpTools(server: InternalMcpEntry, configuredOverride?: ExternalMcpServer) {
+    setInternalMcpToolsDialogServer(server);
+    setInternalMcpToolsDialogConfig(configuredOverride || findInternalMcpConfig(server) || null);
+    setInternalMcpDialogTools([]); setInternalMcpDialogError(""); setInternalMcpDialogLoading(true);
+    try {
+      const configured = configuredOverride || findInternalMcpConfig(server);
+      if (!configured) throw new Error("未找到 MCP 配置，请重新获取列表。");
+      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "inspect", id: configured.id }) });
+      const data = await readApiJson<{ tools?: McpTool[]; error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "读取工具失败。");
+      setInternalMcpDialogTools(data.tools || []);
+    } catch (e) { setInternalMcpDialogError(e instanceof Error ? e.message : "读取工具失败。"); }
+    finally { setInternalMcpDialogLoading(false); }
+  }
+
+  async function toggleInternalMcpTool(tool: McpTool) {
+    const configured = internalMcpToolsDialogConfig || (internalMcpToolsDialogServer ? findInternalMcpConfig(internalMcpToolsDialogServer) : undefined);
+    if (!configured) return;
+    setInternalMcpToolUpdating(tool.name); setInternalMcpDialogError("");
+    try {
+      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle-tool", id: configured.id, name: tool.name, enabled: !tool.enabled }) });
+      const data = await readApiJson<{ enabled?: boolean; manuallyAllowed?: boolean; error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "更新工具状态失败。");
+      setInternalMcpDialogTools((items) => items.map((item) => item.name === tool.name ? { ...item, enabled: Boolean(data.enabled), manuallyAllowed: Boolean(data.manuallyAllowed) } : item));
+    } catch (e) { setInternalMcpDialogError(e instanceof Error ? e.message : "更新工具状态失败。"); }
+    finally { setInternalMcpToolUpdating(""); }
+  }
+
+  async function setAllInternalMcpTools(enabled: boolean) {
+    const configured = internalMcpToolsDialogConfig || (internalMcpToolsDialogServer ? findInternalMcpConfig(internalMcpToolsDialogServer) : undefined);
+    if (!configured?.enabled || internalMcpToolUpdating) return;
+    const toolsToUpdate = internalMcpDialogTools.filter((tool) => tool.canEnable && tool.enabled !== enabled);
+    if (!toolsToUpdate.length) return;
+    setInternalMcpToolUpdating("__all__");
+    setInternalMcpDialogError("");
+    const failedTools: string[] = [];
+    try {
+      for (const tool of toolsToUpdate) {
+        try {
+          const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle-tool", id: configured.id, name: tool.name, enabled }) });
+          const data = await readApiJson<{ enabled?: boolean; manuallyAllowed?: boolean; error?: string }>(response);
+          if (!response.ok) throw new Error(data.error || "更新工具状态失败。");
+          setInternalMcpDialogTools((items) => items.map((item) => item.name === tool.name ? { ...item, enabled: Boolean(data.enabled), manuallyAllowed: Boolean(data.manuallyAllowed) } : item));
+        } catch {
+          failedTools.push(tool.title || tool.name);
+        }
+      }
+      if (failedTools.length) setInternalMcpDialogError(`${enabled ? "开启" : "禁用"}失败：${failedTools.join("、")}`);
+    } finally { setInternalMcpToolUpdating(""); }
+  }
+
+  async function toggleInternalMcp(server: InternalMcpEntry) {
+    const configured = findInternalMcpConfig(server);
+    if (!configured) return;
+    setInternalMcpUpdating(server.id); setExternalMcpError("");
+    try {
+      const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle-server", id: configured.id, enabled: !configured.enabled }) });
+      const data = await readApiJson<{ enabled?: boolean; error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "更新 MCP 状态失败。");
+      setExternalMcpServers((items) => items.map((item) => item.id === configured.id ? { ...item, enabled: Boolean(data.enabled) } : item));
+    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "更新 MCP 状态失败。"); }
+    finally { setInternalMcpUpdating(""); }
   }
 
   async function toggleExternalMcpServer(server: ExternalMcpServer) {
@@ -1586,9 +2043,9 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     try {
       const response = await fetch("/api/mcp/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle-tool", id: server.id, name: tool.name, enabled: !tool.enabled }) });
       const data = await readApiJson<{ enabled?: boolean; manuallyAllowed?: boolean; error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || "更新其他工具状态失败。");
+      if (!response.ok) throw new Error(data.error || "更新远程工具状态失败。");
       setExternalMcpTools((items) => ({ ...items, [server.id]: (items[server.id] || []).map((item) => item.name === tool.name ? { ...item, enabled: Boolean(data.enabled), manuallyAllowed: Boolean(data.manuallyAllowed) } : item) }));
-    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "更新其他工具状态失败。"); }
+    } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "更新远程工具状态失败。"); }
     finally { setExternalMcpUpdating(""); }
   }
 
@@ -1609,6 +2066,20 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     } catch (e) { setExternalMcpError(e instanceof Error ? e.message : "删除 MCP 服务器失败。"); }
     finally { setExternalMcpUpdating(""); setExternalMcpServerToDelete(null); }
   }
+
+  const otherMcpServers = externalMcpServers.filter((server) => server.transport !== "bridge" && server.name !== "内部工具" && !server.name.startsWith("内部工具："));
+  const builtInMcpIds = new Set(internalMcps.map((server) => server.id));
+  const bridgeLocalMcpServers = externalMcpServers.filter((server) => server.transport === "bridge");
+  const customBridgeMcpServers = bridgeLocalMcpServers.filter((server) => !builtInMcpIds.has(server.bridgeServerId || ""));
+  const knownBridgeIds = new Set([...internalMcps.map((server) => server.id), ...bridgeLocalMcpServers.map((server) => server.bridgeServerId || "")]);
+  const presetPackages = new Set(["@futuretea/mysql-mcp-server", "@playwright/mcp"]);
+  const installedBridgeCards = browserMcpStatuses.filter((status) => status.installed && !presetPackages.has(status.packageName || "") && !knownBridgeIds.has(status.id) && !hiddenMcpPluginIds.includes(status.id)).map((status) => ({
+    id: status.id,
+    name: status.packageName ? titleFromNpmPackageName(status.packageName) : `本地 MCP ${status.id}`,
+    description: `本机已安装插件 · ${status.packageName || status.id}`,
+    url: `bridge://${status.id}`,
+  }));
+  const bridgeMcpCards: InternalMcpEntry[] = [...internalMcps, ...customBridgeMcpServers.map((server) => ({ id: server.bridgeServerId || "", name: server.name, description: "本机 stdio MCP", url: server.url })), ...installedBridgeCards];
 
   const projectConversationGroups = (() => {
     const groups = new Map<string, { id: string; name: string; conversations: Conversation[] }>();
@@ -1631,11 +2102,12 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       <div className="brand"><div className="brand-mark"><SunIcon /></div><div><strong>Little Sunshine</strong></div></div>
       <button className="new-chat" disabled={loading} onClick={startNewConversation}><svg className="new-chat-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg><span>开启新会话</span></button>
       {canOpenLocalProject && <button type="button" className="new-project" disabled={loading || !projectDirectoryStorageReady} onClick={() => void selectProjectDirectory()}><FolderOpen aria-hidden="true" /><span>打开本地项目(本地文件夹)</span></button>}
-      {projectConversationGroups.length > 0 && <div className="project-list"><div className="project-list-heading">项目</div>{projectConversationGroups.map((group) => <div className="project-chat-group" key={group.id}><div className="project-list-row"><div className="project-list-select" title={group.name}><FolderPlus aria-hidden="true" /><span>{group.name}</span></div><ProjectMenuButton projectName={group.name} open={openProjectMenuId === group.id} disabled={loading || projectDeleting || conversationDeleting || conversationRenaming} onToggle={() => { setOpenConversationMenuId(""); setOpenProjectMenuId(openProjectMenuId === group.id ? "" : group.id); }} onDelete={() => requestDeleteProject(group)} /><button type="button" className="project-new-chat" aria-label={`在项目 ${group.name} 下新建会话`} title="在此项目下新建会话" disabled={loading || projectDeleting} onClick={() => startProjectConversation(group.id)}><Plus aria-hidden="true" /></button></div>{sortConversations(group.conversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming || projectDeleting} menuOpen={openConversationMenuId === conversation.id} className="project-conversation-item" onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />)}</div>)}</div>}
+      {authenticated && <button type="button" className={`new-project mcp-tools-menu-item${mcpPageOpen ? " active" : ""}`} onClick={() => void openMcpTools()}><Wrench aria-hidden="true" /><span>MCP 工具</span></button>}
+      {projectConversationGroups.length > 0 && <div className="project-list"><div className="project-list-heading">项目</div>{projectConversationGroups.map((group) => <div className="project-chat-group" key={group.id}><div className="project-list-row"><div className="project-list-select" title={group.name}><FolderPlus aria-hidden="true" /><span>{group.name}</span></div><ProjectMenuButton projectName={group.name} open={openProjectMenuId === group.id} disabled={loading || projectDeleting || conversationDeleting || conversationRenaming} onToggle={() => { setOpenConversationMenuId(""); setOpenProjectMenuId(openProjectMenuId === group.id ? "" : group.id); }} onDelete={() => requestDeleteProject(group)} /><button type="button" className="project-new-chat" aria-label={`在项目 ${group.name} 下新建会话`} title="在此项目下新建会话" disabled={loading || projectDeleting} onClick={() => startProjectConversation(group.id)}><Plus aria-hidden="true" /></button></div>{sortConversations(group.conversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={!mcpPageOpen && activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming || projectDeleting} menuOpen={openConversationMenuId === conversation.id} className="project-conversation-item" onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />)}</div>)}</div>}
       {projectError && <div className="project-error" role="alert">{projectError}</div>}
       <div className="conversation-history">
         <div className="conversation-history-heading">最近会话</div>
-        {recentConversations.length ? sortConversations(recentConversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming} menuOpen={openConversationMenuId === conversation.id} onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />) : <div className="conversation-history-empty">暂无会话</div>}
+        {recentConversations.length ? sortConversations(recentConversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={!mcpPageOpen && activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming} menuOpen={openConversationMenuId === conversation.id} onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />) : <div className="conversation-history-empty">暂无会话</div>}
       </div>
       <div className="sidebar-bottom">
         {authenticated ? <div className="sidebar-account"><div className="user-chip"><SidebarAvatar username={username} avatarUrl={avatarUrl} /><div className="sidebar-account-name"><strong>{username || "已登录用户"}</strong><small>已登录</small></div><button type="button" className="sidebar-account-more" aria-label="账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /></button></div>{userMenuOpen && <div className="sidebar-account-menu"><button type="button" className="sidebar-account-profile" onClick={() => { setUserMenuOpen(false); onOpenProfile(); }}><UserRound aria-hidden="true" />个人资料</button><button type="button" className="sidebar-account-logout" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut aria-hidden="true" />退出登录</button></div>}</div> : <button type="button" className="guest-sidebar-login" onClick={onRequireLogin}>登录</button>}
@@ -1643,7 +2115,6 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     </aside>
 
     <section className="main-area">
-      {authenticated && <button type="button" className="mcp-tools-button" onClick={() => void openMcpTools()}><span>☷</span> MCP 工具</button>}
       <div className={"workspace " + (showWelcome ? "welcome-workspace" : "")}>
         <section className={"conversation-panel " + (showWelcome ? "welcome-panel" : "")}>
           <div className={"chat-content " + (showWelcome ? "welcome-content" : "")}>
@@ -1687,16 +2158,17 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
 
       </div>
     </section>
-    <Dialog open={mcpModalOpen} onOpenChange={setMcpModalOpen}>
-      <DialogContent className="mcp-tools-modal flex max-h-[min(88vh,720px)] w-[min(100%,780px)] flex-col gap-0 overflow-hidden rounded-[13px] border border-[#e8e7ed] bg-white p-[23px] text-zinc-900 shadow-[0_22px_70px_#25212d38] sm:max-w-none" showCloseButton={false} aria-labelledby="mcp-tools-title">
-      <header><div><DialogTitle id="mcp-tools-title">工具管理</DialogTitle><p>配置图像生成、视频生成、网页搜索和其他可供模型调用的工具。</p></div><DialogClose asChild><button type="button" className="model-modal-close" aria-label="关闭">×</button></DialogClose></header>
+    {mcpPageOpen && <section className="mcp-tools-page" aria-label="MCP 工具管理">
+      <div className="mcp-tools-page-content">
+      <div className="mcp-tools-page-inner">
       <div className="external-mcp-tab">
         <div className="mcp-manager-layout">
         <nav className="mcp-category-sidebar" role="tablist" aria-label="MCP 工具分类" aria-orientation="vertical">
-          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "image-generation"} className="mcp-category-button" variant={mcpManagerCategory === "image-generation" ? "secondary" : "ghost"} onClick={() => setMcpManagerCategory("image-generation")}>图像生成</Button>
-          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "video-generation"} className="mcp-category-button" variant={mcpManagerCategory === "video-generation" ? "secondary" : "ghost"} onClick={() => setMcpManagerCategory("video-generation")}>视频生成</Button>
-          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "web-search"} className="mcp-category-button" variant={mcpManagerCategory === "web-search" ? "secondary" : "ghost"} onClick={() => setMcpManagerCategory("web-search")}>网页搜索</Button>
-          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "external"} className="mcp-category-button" variant={mcpManagerCategory === "external" ? "secondary" : "ghost"} onClick={() => setMcpManagerCategory("external")}>其他工具</Button>
+          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "image-generation"} className="mcp-category-button" variant={mcpManagerCategory === "image-generation" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("image-generation")}>图像生成</Button>
+          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "video-generation"} className="mcp-category-button" variant={mcpManagerCategory === "video-generation" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("video-generation")}>视频生成</Button>
+          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "web-search"} className="mcp-category-button" variant={mcpManagerCategory === "web-search" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("web-search")}>网页搜索</Button>
+          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "internal-tools"} className="mcp-category-button" variant={mcpManagerCategory === "internal-tools" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("internal-tools")}>本地工具</Button>
+          <Button type="button" role="tab" aria-selected={mcpManagerCategory === "external"} className="mcp-category-button" variant={mcpManagerCategory === "external" ? "secondary" : "ghost"} onClick={() => selectMcpCategory("external")}>远程工具</Button>
         </nav>
         <div className="mcp-category-content">
         {mcpManagerCategory === "image-generation" && <div role="tabpanel" aria-label="图像生成">
@@ -1745,18 +2217,119 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
             </div>;
           })}</div>
         </div>}
-        {mcpManagerCategory === "external" && <div role="tabpanel" aria-label="其他工具">
-        <div className="external-mcp-toolbar"><span>未标记只读的工具需要你手动授权；声明为有破坏性的工具仍不可用。</span><Button type="button" variant="outline" size="sm" onClick={openExternalMcpEditor}><Plus aria-hidden="true" />添加 MCP</Button></div>
+        {mcpManagerCategory === "internal-tools" && <div role="tabpanel" aria-label="本地工具">
+          <div className="mb-4 flex items-start justify-between gap-3"><div><strong className="text-sm">本地 MCP 列表</strong><p className="mt-1 text-xs text-muted-foreground">BrowserBridge 可以启动并转发任意本机 stdio MCP。npm 包安装在桥接程序共享的 plugins 目录，各账号共用安装文件；命令和环境变量按账号分别保存。</p></div><div className="mt-4 flex shrink-0 items-center gap-2"><Button type="button" variant="outline" size="sm" disabled={!browserBridgeConnected} onClick={addLocalMcp}><Plus aria-hidden="true" />添加本地 MCP</Button><Button type="button" variant="outline" size="sm" aria-expanded={browserBridgePanelOpen} onClick={() => setBrowserBridgePanelOpen((open) => !open)}>{browserBridgePanelOpen ? "收起桥接信息" : "查看桥接信息"}</Button></div></div>
+          {browserBridgePanelOpen && <div className="mb-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+            {browserBridgeConnected ? <div className="mb-3 min-w-0">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs text-muted-foreground">BrowserBridge 安装目录</div>
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+                  {browserBridgeVersion && latestBrowserBridgeVersion && compareVersions(browserBridgeVersion, latestBrowserBridgeVersion) !== 0 && <div className="text-right text-xs">当前版本：{browserBridgeVersion}　·　最新版本：{latestBrowserBridgeVersion}</div>}
+                  <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${browserBridgeConnected ? "bg-emerald-100 text-emerald-700" : "bg-zinc-200 text-zinc-600"}`}><span className={`size-1.5 rounded-full ${browserBridgeConnected ? "bg-emerald-500" : "bg-zinc-400"}`} aria-hidden="true" />{browserBridgeConnected ? "已连接" : "未连接"}</span>
+                </div>
+              </div>
+              <code className="mt-1 block break-all rounded border border-zinc-200 bg-white px-2 py-1.5 text-xs">{browserBridgeInstallDirectory || (browserBridgeConnected ? "当前桥接程序版本未上报安装目录，请更新并重启 BrowserBridge。" : "桥接程序未连接，连接后显示安装目录。")}</code>
+              {browserBridgeConnected && (!browserBridgeVersion || (latestBrowserBridgeVersion && compareVersions(browserBridgeVersion, latestBrowserBridgeVersion) === -1)) && <div role="status" className="mt-1 text-xs text-amber-700">{browserBridgeVersion ? "有新版桥接工具可用，请更新并重启。" : "当前桥接工具未上报版本，请下载最新版并重新安装。"} <a className="font-medium underline" href="/BrowserBridge-Windows-Installer-v1.2.2.zip" download>下载最新版</a></div>}
+            </div> : <div className="mb-3 flex flex-wrap items-center justify-end gap-2"><Button asChild type="button" variant="outline" size="sm" className="h-8"><a href="/BrowserBridge-Windows-Installer-v1.2.2.zip" download title="下载桥接工具" aria-label="下载桥接工具"><Download aria-hidden="true" />下载桥接工具</a></Button><Button type="button" variant="outline" size="sm" className="h-8" onClick={() => setBrowserBridgeInstallOpen(true)}>查看安装说明</Button></div>}
+            <div className="grid items-end gap-3 lg:grid-cols-[minmax(0,0.65fr)_minmax(160px,1fr)_minmax(190px,auto)]">
+              <div className="min-w-0"><div className="text-xs text-muted-foreground">项目地址</div><div className="relative mt-1"><code className="block min-h-8 break-all rounded border border-zinc-200 bg-white py-1.5 pl-2 pr-10 text-xs">{browserBridgeAppUrl || "正在获取项目地址…"}</code><Button type="button" variant="ghost" size="icon" className="absolute right-1 top-1/2 size-7 -translate-y-1/2" disabled={!browserBridgeAppUrl} title={browserBridgeCopied === "url" ? "已复制" : "复制项目地址"} aria-label={browserBridgeCopied === "url" ? "已复制项目地址" : "复制项目地址"} onClick={() => void copyBrowserBridgeValue("url", browserBridgeAppUrl)}>{browserBridgeCopied === "url" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}</Button></div></div>
+              <div className="min-w-0"><div className="text-xs text-muted-foreground">配对码</div><div className="relative mt-1"><code className="block min-h-8 break-all rounded border border-zinc-200 bg-white py-1.5 pl-2 pr-20 text-xs">{browserBridgeConnected ? "已连接，无需配对码" : browserBridgePairingCode || (browserBridgePairingError ? "生成失败" : "正在生成配对码…")}</code><Button type="button" variant="ghost" size="icon" className="absolute right-9 top-1/2 size-7 -translate-y-1/2" disabled={!browserBridgePairingCode || browserBridgeConnected} title={browserBridgeCopied === "pairing" ? "已复制" : "复制配对码"} aria-label={browserBridgeCopied === "pairing" ? "已复制配对码" : "复制配对码"} onClick={() => void copyBrowserBridgeValue("pairing", browserBridgePairingCode)}>{browserBridgeCopied === "pairing" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}</Button><Button type="button" variant="ghost" size="icon" className="absolute right-1 top-1/2 size-7 -translate-y-1/2" disabled={browserBridgeConnected} title="重新生成配对码" aria-label="重新生成配对码" onClick={() => void createBrowserPairing()}><RefreshCw aria-hidden="true" /></Button></div></div>
+              <div className="min-w-0 space-y-1"><Label htmlFor="browser-bridge-call-timeout" className="text-xs font-normal text-muted-foreground">工具调用超时</Label><div className="flex flex-wrap items-center gap-2"><Input id="browser-bridge-call-timeout" type="number" min={5} max={300} step={1} className="h-8 w-24" value={browserBridgeCallTimeoutSeconds} onChange={(event) => { setBrowserBridgeCallTimeoutSeconds(event.target.value); setBrowserBridgeCallTimeoutMessage(""); }} /><span className="text-xs text-muted-foreground">秒（5–300）</span><Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={browserBridgeCallTimeoutSaving} onClick={() => void saveBrowserBridgeCallTimeout()}>{browserBridgeCallTimeoutSaving ? "保存中…" : "保存超时"}</Button></div>{browserBridgeCallTimeoutMessage && <span role="status" className="text-xs text-muted-foreground">{browserBridgeCallTimeoutMessage}</span>}</div>
+            </div>
+            {browserBridgePairingError && <div role="alert" className="mt-2 text-xs text-red-700">{browserBridgePairingError}</div>}
+          </div>}
+          {externalMcpError && <div role="alert" className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{externalMcpError}</div>}
+          {bridgeMcpCards.length ? <div className="mcp-tools-list grid grid-cols-1 gap-3 sm:grid-cols-2">{bridgeMcpCards.map((server) => {
+            const configured = findInternalMcpConfig(server);
+            const localStatus = browserMcpStatuses.find((item) => item.id === server.id);
+            const isBuiltinLocalMcp = Boolean(builtinLocalMcpPackages[server.id]);
+            const isPreset = server.id === "mysql" || server.id === "playwright" || isBuiltinLocalMcp;
+            const isMysql = server.id === "mysql";
+            const isPlaywright = server.id === "playwright";
+            const localMcpInstalled = Boolean(localStatus?.installed || localStatus?.connected);
+            const bridgeInstallVersionComparison = compareVersions(browserBridgeVersion, "2.0.6");
+            const bridgeSupportsLocalInstall = browserBridgeConnected && bridgeInstallVersionComparison !== null && bridgeInstallVersionComparison >= 0;
+            const bridgeUninstallVersionComparison = compareVersions(browserBridgeVersion, "2.0.9");
+            const bridgeSupportsMcpUninstall = browserBridgeConnected && bridgeUninstallVersionComparison !== null && bridgeUninstallVersionComparison >= 0;
+            return <Card className="mcp-tool-card external-mcp-card" key={server.id}>
+              <div className="mcp-tool-card-heading has-actions">
+                <div className="external-mcp-server-title">
+                  <div className="mcp-tool-card-title-row"><strong>{server.name}</strong></div>
+                  <small>{server.description}{localStatus?.error ? ` · ${localStatus.error}` : ""}</small>
+                  {localStatus?.installSource && <small className="mcp-install-source">安装来源：<code title={localStatus.installSource}>{localStatus.installSource}</code></small>}
+                  {localStatus?.installed === true && localStatus.installDirectory && <small className="mcp-install-source">安装目录：<code title={localStatus.installDirectory}>{localStatus.installDirectory}</code></small>}
+                  {mcpUninstallErrors[server.id] && <small role="alert" className="text-red-700">{mcpUninstallErrors[server.id]}</small>}
+                  {isMysql && mysqlMcpInstallError && <small role="alert" className="text-red-700">{mysqlMcpInstallError}</small>}
+                  {isPlaywright && playwrightMcpInstallError && <small role="alert" className="text-red-700">{playwrightMcpInstallError}</small>}
+                  {isBuiltinLocalMcp && builtinMcpInstallErrors[server.id] && <small role="alert" className="text-red-700">{builtinMcpInstallErrors[server.id]}</small>}
+                </div>
+                <div className="mcp-tool-card-actions">
+                  {localStatus && <span className={localMcpInstalled ? "mcp-status-ready" : "mcp-status-pending"}>{localMcpInstalled ? "已安装" : "未安装"}</span>}
+                  {localStatus && <span className={localStatus.connected ? "mcp-status-ready" : "mcp-status-pending"}>{localStatus.connected ? "已连接" : "未连接"}</span>}
+                  {localStatus?.installedVersion && <span className="mcp-status-pending">v{localStatus.installedVersion}</span>}
+                  <Switch checked={Boolean(configured?.enabled && localMcpInstalled)} aria-label={`${configured?.enabled ? "禁用" : "启用"} ${server.name}`} title={configured?.enabled ? "已启用，点击禁用" : "已禁用，点击启用"} disabled={!configured || !localMcpInstalled || internalMcpUpdating === server.id} onCheckedChange={() => void toggleInternalMcp(server)} />
+                </div>
+              </div>
+              <div className="mcp-tool-card-bottom flex items-end justify-between gap-3">
+                {(!isPreset || localMcpInstalled) ? <Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => void openInternalMcpTools(server)}>查看工具</Button> : <span />}
+                <div className="flex items-center gap-2">
+                  {isMysql && !localMcpInstalled && <Button type="button" variant="outline" size="sm" disabled={!bridgeSupportsLocalInstall || mysqlMcpInstalling} title={!bridgeSupportsLocalInstall ? "请更新并连接 BrowserBridge 2.0.6 或更新版本" : undefined} onClick={() => void installMysqlMcp()}>{mysqlMcpInstalling ? "安装中…" : "安装到本地"}</Button>}
+                  {isPlaywright && !localMcpInstalled && <Button type="button" variant="outline" size="sm" disabled={!bridgeSupportsLocalInstall || playwrightMcpInstalling} title={!bridgeSupportsLocalInstall ? "请更新并连接 BrowserBridge 2.0.6 或更新版本" : undefined} onClick={() => void installPlaywrightMcp()}>{playwrightMcpInstalling ? "安装中…" : "安装到本地"}</Button>}
+                  {isBuiltinLocalMcp && !localMcpInstalled && <Button type="button" variant="outline" size="sm" disabled={!bridgeSupportsLocalInstall || builtinMcpInstallingId !== ""} title={!bridgeSupportsLocalInstall ? "请更新并连接 BrowserBridge 2.0.6 或更新版本" : undefined} onClick={() => void installBuiltinLocalMcp(server)}>{builtinMcpInstallingId === server.id ? "安装中…" : "安装到本地"}</Button>}
+                  {isPreset && localMcpInstalled && <Button type="button" variant="outline" size="sm" disabled={!browserBridgeConnected} onClick={() => void openLocalMcpConfig(server)}>{localStatus?.configured ? "修改本地 MCP" : "配置本地 MCP"}</Button>}
+                  {!isPreset && !localMcpInstalled && <Button type="button" variant="outline" size="sm" disabled={!browserBridgeConnected} onClick={() => void openLocalMcpConfig(server)}>安装到本地</Button>}
+                  {!isPreset && localMcpInstalled && <Button type="button" variant="outline" size="sm" disabled={!browserBridgeConnected} onClick={() => void openLocalMcpConfig(server)}>{localStatus?.configured ? "修改本地 MCP" : "配置本地 MCP"}</Button>}
+                  {localStatus?.installed === true && <Button type="button" variant="outline" size="sm" className="border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800" disabled={!bridgeSupportsMcpUninstall || mcpUninstallingId === server.id} title={!bridgeSupportsMcpUninstall ? "请更新并连接 BrowserBridge 2.0.9 或更新版本" : undefined} onClick={() => setLocalMcpToUninstall(server)}>{mcpUninstallingId === server.id ? "卸载中…" : "卸载"}</Button>}
+                </div>
+              </div>
+            </Card>;
+          })}</div> : <div className="mcp-tools-state">{internalMcpFetching ? "正在加载本地 MCP…" : "还没有本地 MCP，请点击“添加本地 MCP”配置。"}</div>}
+        </div>}
+        {mcpManagerCategory === "external" && <div role="tabpanel" aria-label="远程工具">
+        <div className="external-mcp-toolbar"><span>未标记只读的工具需要你手动授权；声明为有破坏性的工具仍不可用。</span><Button type="button" variant="outline" size="sm" onClick={openExternalMcpEditor}><Plus aria-hidden="true" />添加远程 MCP</Button></div>
         {externalMcpError && <div role="alert" className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{externalMcpError}</div>}
-        {externalMcpServers.length ? <div className="mcp-tools-list">{externalMcpServers.map((server) => <Card className="mcp-tool-card external-mcp-card" key={server.id}>
+        {otherMcpServers.length ? <div className="mcp-tools-list grid grid-cols-1 gap-3 sm:grid-cols-2">{otherMcpServers.map((server) => <Card className="mcp-tool-card external-mcp-card" key={server.id}>
           <div className="mcp-tool-card-heading"><div className="external-mcp-server-title"><strong>{server.name}</strong><small>{server.transport === "stdio" ? server.hasEnv ? "本地命令 · 已配置环境变量" : "本地 stdio" : server.hasToken ? "已配置认证" : "未配置认证"}</small></div><div className="external-mcp-server-actions"><Switch checked={server.enabled} aria-label={`${server.enabled ? "禁用" : "启用"}服务器 ${server.name}`} title={server.enabled ? "服务器已启用" : "服务器已禁用"} disabled={externalMcpUpdating === server.id} onCheckedChange={() => void toggleExternalMcpServer(server)} /><Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground hover:bg-red-50 hover:text-red-600" title={`删除 ${server.name}`} aria-label={`删除 ${server.name}`} onClick={() => void deleteExternalMcpServer(server)}><Trash2 aria-hidden="true" /></Button></div></div>
-          <code>{server.transport === "stdio" ? [server.command, ...server.args].join(" ") : server.url}</code>{server.transport === "stdio" && server.cwd && <small>工作目录：{server.cwd}</small>}<Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => { if (externalMcpExpandedId === server.id) setExternalMcpExpandedId(""); else { setExternalMcpExpandedId(server.id); if (!externalMcpTools[server.id]) void loadExternalMcpTools(server); } }}>{externalMcpExpandedId === server.id ? "收起工具" : "查看工具"}</Button>
+          <code>{server.transport === "stdio" ? [server.command, ...server.args].join(" ") : server.url}</code>{server.transport === "stdio" && server.cwd && <small>工作目录：{server.cwd}</small>}<div className="flex items-center justify-between gap-2"><Button type="button" variant="ghost" size="sm" className="external-mcp-show-tools h-7 w-fit justify-start px-0 text-[11px]" onClick={() => { if (externalMcpExpandedId === server.id) setExternalMcpExpandedId(""); else { setExternalMcpExpandedId(server.id); if (!externalMcpTools[server.id]) void loadExternalMcpTools(server); } }}>{externalMcpExpandedId === server.id ? "收起工具" : "查看工具"}</Button>{server.transport === "http" && <Button type="button" variant="ghost" size="sm" className="h-7 justify-end px-0 text-[11px]" onClick={() => openExternalMcpEditor(server)}>修改配置</Button>}</div>
           {externalMcpExpandedId === server.id && <div className="external-mcp-tool-list">{externalMcpLoading === server.id ? <small>正在读取工具…</small> : (externalMcpTools[server.id] || []).length ? externalMcpTools[server.id].map((tool) => <div className="external-mcp-tool" key={tool.name}><div><strong>{tool.title || tool.name}</strong><small>{tool.destructive ? "服务器标记为有破坏性，已禁止" : tool.readOnly ? tool.description || tool.name : tool.manuallyAllowed ? `已手动授权 · ${tool.description || tool.name}` : `未标记为只读 · ${tool.description || tool.name}`}</small></div>{tool.canEnable ? <Switch checked={tool.enabled} aria-label={`${tool.enabled ? "禁用" : tool.readOnly ? "启用" : "手动授权并启用"}${tool.title || tool.name}`} title={tool.readOnly ? (tool.enabled ? "禁用工具" : "启用工具") : (tool.enabled ? "撤销授权并禁用" : "手动授权并启用")} disabled={externalMcpUpdating === server.id + ":" + tool.name} onCheckedChange={() => void toggleExternalMcpTool(server, tool)} /> : <span className="external-mcp-unsafe">不可用</span>}</div>) : <small>服务器没有提供工具。</small>}</div>}
-        </Card>)}</div> : <div className="mcp-tools-state">还没有其他工具，点击“添加 MCP”开始配置。</div>}
+        </Card>)}</div> : <div className="mcp-tools-state">还没有远程工具，点击“添加远程 MCP”开始配置。</div>}
         </div>}
         </div>
       </div>
       </div>
+      </div>
+      </div>
+    </section>}
+    <Dialog open={browserBridgeInstallOpen} onOpenChange={setBrowserBridgeInstallOpen}>
+      <DialogContent className="max-h-[min(80vh,620px)] max-w-[600px] overflow-y-auto border-zinc-200 bg-white p-6 text-zinc-900 shadow-2xl" showCloseButton={false}>
+        <div className="flex items-start justify-between gap-4"><DialogHeader className="space-y-1 text-left"><DialogTitle className="text-xl font-semibold tracking-tight">查看安装说明</DialogTitle><DialogDescription>安装并连接本机 BrowserBridge。</DialogDescription></DialogHeader><DialogClose asChild><Button type="button" variant="ghost" size="icon" className="size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none hover:bg-transparent hover:text-zinc-900" aria-label="关闭"><X className="size-4" /></Button></DialogClose></div>
+        <p className="text-sm leading-6">下载并解压 Windows 安装包，双击 <code>Install-BrowserBridge.cmd</code>，选择安装目录并完成依赖安装；之后可输入 <code>yes</code> 一次安装 MySQL、Playwright 和四个官方本地 MCP。已安装的工具会跳过。安装完成后会自动打开连接窗口，输入本地工具页显示的项目地址和配对码即可连接。以后也可以单独运行目录里的 <code>Start-BrowserBridge.cmd</code> 再次连接。</p>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={localMcpConfigOpen} onOpenChange={setLocalMcpConfigOpen}>
+      <DialogContent className="flex h-[min(80vh,760px)] max-h-[min(80vh,760px)] max-w-[620px] flex-col gap-0 overflow-hidden border-zinc-200 bg-white p-0 text-zinc-900 shadow-2xl" showCloseButton={false}>
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-zinc-100 px-6 pt-6 pb-4"><DialogHeader className="space-y-1 text-left"><DialogTitle className="text-xl font-semibold tracking-tight">配置{localMcpConfigServer?.name || "本机 MCP"}命令</DialogTitle><DialogDescription>命令由本机 BrowserBridge 启动。配置文件和环境变量保存在本机；测试会启动进程并读取它提供的工具。</DialogDescription></DialogHeader><DialogClose asChild><Button type="button" variant="ghost" size="icon" className="size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none hover:bg-transparent hover:text-zinc-900" aria-label="关闭"><X className="size-4" /></Button></DialogClose></div>
+        <div className="min-h-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto px-6 py-4">
+          {localMcpConfigLoading && <p role="status" className="text-xs text-muted-foreground">正在读取本机 MCP 配置…</p>}
+          {localMcpConfigServer?.url.startsWith("bridge://") && <div className="space-y-2"><Label htmlFor="local-mcp-name">MCP 名称</Label><Input id="local-mcp-name" required value={localMcpDisplayName} onChange={(event) => setLocalMcpDisplayName(event.target.value)} placeholder="例如：Filesystem MCP" /></div>}
+          <div className="space-y-2"><Label htmlFor="local-mcp-command">启动命令</Label><Input id="local-mcp-command" required value={localMcpCommand} onChange={(event) => setLocalMcpCommand(event.target.value)} placeholder="例如 npx、uvx 或 python" /></div>
+            <div className="min-w-0 space-y-2"><Label htmlFor="local-mcp-args">命令参数（JSON 字符串数组）</Label><Textarea id="local-mcp-args" className="min-w-0 max-w-full field-sizing-fixed overflow-x-hidden whitespace-pre-wrap break-all" wrap="soft" value={localMcpArgsJson} onChange={(event) => setLocalMcpArgsJson(event.target.value)} rows={4} spellCheck={false} />{localMcpConfigServer?.id === "playwright" && <p className="text-[11px] leading-relaxed text-muted-foreground">不加 <code className="rounded bg-zinc-100 px-1">--extension</code> 时，Playwright 会启动独立浏览器；加上后会通过扩展连接当前 Chrome/Edge，并在其中打开页面。当前浏览器模式需要先<a className="font-medium text-blue-600 underline underline-offset-2" href="https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm" target="_blank" rel="noreferrer">安装 Playwright 浏览器扩展</a>，并在此参数中加入 <code className="rounded bg-zinc-100 px-1">"--extension"</code>。</p>}{localMcpConfigServer?.id === "@modelcontextprotocol/server-filesystem" && <p className="text-[11px] leading-relaxed text-muted-foreground">Filesystem MCP 只允许访问你在参数末尾填写的目录。请添加至少一个本机绝对路径，例如 <code className="rounded bg-zinc-100 px-1">"D:\\Projects"</code>；多个目录可继续添加多个字符串参数。</p>}{localMcpConfigServer && localMcpConfigServer.id !== "mysql" && localMcpConfigServer.id !== "playwright" && <p className="text-[11px] leading-relaxed text-muted-foreground">使用 <code className="rounded bg-zinc-100 px-1">npx -y &lt;npm包名&gt;</code> 启动时，点击“测试并保存”会先检查 BrowserBridge 的 plugins 目录；未安装就安装到以 npm 包名命名的目录，再从本地启动。</p>}</div>
+          <div className="min-w-0 space-y-2"><Label htmlFor="local-mcp-env">环境变量（JSON 字符串对象）</Label><Textarea id="local-mcp-env" className="min-w-0 max-w-full field-sizing-fixed overflow-x-hidden whitespace-pre-wrap break-all" wrap="soft" value={localMcpEnvJson} onChange={(event) => setLocalMcpEnvJson(event.target.value)} rows={5} spellCheck={false} /><p className="text-[11px] text-muted-foreground">{localMcpConfigServer?.id === "mysql" ? "MySQL MCP v0.0.2 需要 MYSQL_DSN，例如 user:password@tcp(host:3306)/database；请替换为本机数据库的实际连接信息。" : "留空的已有变量会沿用本机保存值；可在这里填写数据库账号密码或 API Key。"} Windows 使用 npx 时可将命令设为 cmd.exe，并使用 /c 参数启动。</p></div>
+          <div className="space-y-2"><Label htmlFor="local-mcp-cwd">工作目录（可选）</Label><Input id="local-mcp-cwd" value={localMcpCwd} onChange={(event) => setLocalMcpCwd(event.target.value)} placeholder="留空使用桥接程序目录" /></div>
+          {localMcpConfigError && <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{localMcpConfigError}</div>}
+          {!browserBridgeConnected && <p className="text-xs text-amber-700">请先启动并连接 BrowserBridge。</p>}
+        </div>
+        <div className="flex shrink-0 justify-between gap-2 border-t border-zinc-100 bg-zinc-50/60 px-6 py-4"><div>{(localMcpConfigConfigured || (localMcpConfigServer?.url.startsWith("bridge://") && bridgeLocalMcpServers.some((item) => item.bridgeServerId === localMcpConfigServer?.id))) && <Button type="button" variant="ghost" className="text-red-700 hover:text-red-800" disabled={localMcpConfigBusy || !browserBridgeConnected} onClick={() => void removeLocalMcpConfig()}>移除本机 MCP</Button>}</div><div className="flex gap-2"><Button type="button" variant="outline" disabled={localMcpConfigBusy || localMcpConfigLoading || !browserBridgeConnected || !localMcpCommand.trim() || (localMcpConfigServer?.url.startsWith("bridge://") && !localMcpDisplayName.trim())} onClick={() => void saveLocalMcpConfig()}>{localMcpConfigBusy ? "启动并读取工具中…" : "测试并保存"}</Button></div></div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={internalMcpToolsDialogServer !== null} onOpenChange={(open) => { if (!open) setInternalMcpToolsDialogServer(null); }}>
+      <DialogContent className="flex h-[min(80vh,620px)] max-h-[min(80vh,620px)] max-w-[600px] flex-col gap-0 overflow-hidden border-zinc-200 bg-white p-0 text-zinc-900 shadow-2xl" showCloseButton={false}>
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-zinc-100 px-6 pt-6 pb-4"><DialogHeader className="space-y-1 text-left"><DialogTitle className="text-xl font-semibold tracking-tight">{internalMcpToolsDialogServer?.name || "本地 MCP"} · 工具列表</DialogTitle><DialogDescription>{internalMcpToolsDialogServer?.description}</DialogDescription></DialogHeader><DialogClose asChild><Button type="button" variant="ghost" size="icon" className="size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none hover:bg-transparent hover:text-zinc-900" aria-label="关闭"><X className="size-4" /></Button></DialogClose></div>
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50/60 px-6 py-3"><span className="text-xs text-muted-foreground">可用工具：{internalMcpDialogTools.filter((tool) => tool.canEnable).length} / {internalMcpDialogTools.length}</span><div className="flex gap-2"><Button type="button" variant="outline" size="sm" className="h-8" disabled={internalMcpDialogLoading || Boolean(internalMcpToolUpdating) || !internalMcpDialogTools.some((tool) => tool.canEnable && !tool.enabled) || !(internalMcpToolsDialogConfig || (internalMcpToolsDialogServer ? findInternalMcpConfig(internalMcpToolsDialogServer) : undefined))?.enabled} onClick={() => void setAllInternalMcpTools(true)}>全部开启</Button><Button type="button" variant="outline" size="sm" className="h-8" disabled={internalMcpDialogLoading || Boolean(internalMcpToolUpdating) || !internalMcpDialogTools.some((tool) => tool.canEnable && tool.enabled) || !(internalMcpToolsDialogConfig || (internalMcpToolsDialogServer ? findInternalMcpConfig(internalMcpToolsDialogServer) : undefined))?.enabled} onClick={() => void setAllInternalMcpTools(false)}>全部禁用</Button></div></div>
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-4">
+          {internalMcpDialogError && <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{internalMcpDialogError}</div>}
+          {internalMcpDialogLoading ? <div className="mcp-tools-state">正在读取工具…</div> : internalMcpDialogTools.length ? <div className="mcp-tools-list">{internalMcpDialogTools.map((tool) => <Card className="mcp-tool-card external-mcp-card" key={tool.name}><div className="mcp-tool-card-heading"><div className="external-mcp-server-title"><strong>{tool.title || tool.name}</strong><small>{tool.description || tool.name}</small></div>{tool.canEnable ? <Switch checked={tool.enabled} aria-label={`${tool.enabled ? "禁用" : "启用"}工具 ${tool.title || tool.name}`} disabled={Boolean(internalMcpToolUpdating) || !(internalMcpToolsDialogConfig || (internalMcpToolsDialogServer ? findInternalMcpConfig(internalMcpToolsDialogServer) : undefined))?.enabled} onCheckedChange={() => void toggleInternalMcpTool(tool)} /> : <span className="external-mcp-unsafe">不可用</span>}</div></Card>)}</div> : !internalMcpDialogError && <div className="mcp-tools-state">该 MCP 服务没有提供工具。</div>}
+        </div>
       </DialogContent>
     </Dialog>
     <Dialog open={imageMcpEditorOpen} onOpenChange={setImageMcpEditorOpen}>
@@ -1821,26 +2394,38 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       <DialogContent className="max-h-[90vh] max-w-[500px] overflow-y-auto border-zinc-200 bg-white p-6 text-zinc-900 shadow-2xl sm:max-w-[500px]" showCloseButton={false}>
         <div className="flex items-start justify-between gap-4">
           <DialogHeader className="space-y-1 text-left">
-            <DialogTitle className="text-xl font-semibold tracking-tight">添加 MCP</DialogTitle>
-            <DialogDescription>{externalMcpRuntime === "desktop" ? "连接远程 HTTP 服务，或启动本机 MCP 命令。" : "连接远程 Streamable HTTP MCP 服务。"}</DialogDescription>
+            <DialogTitle className="text-xl font-semibold tracking-tight">{externalMcpEditingServer ? "修改远程 MCP 配置" : "添加远程 MCP"}</DialogTitle>
+            <DialogDescription>{externalMcpEditingServer ? "修改远程 MCP 地址或认证信息。" : externalMcpRuntime === "desktop" ? "连接远程 HTTP 服务，或启动本机 MCP 命令。" : "连接远程 Streamable HTTP MCP 服务。"}</DialogDescription>
           </DialogHeader>
           <DialogClose asChild><Button type="button" variant="ghost" size="icon" className="-mr-2 -mt-2 size-8 rounded-none border-0 bg-transparent p-0 text-zinc-500 shadow-none outline-none hover:bg-transparent hover:text-zinc-900 focus-visible:border-transparent focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0" aria-label="关闭"><X className="size-4" /></Button></DialogClose>
         </div>
         <div className="space-y-4">
-          {externalMcpRuntime === "desktop" && <div className="space-y-2"><Label>MCP 类型</Label><div className="flex gap-2"><Button type="button" variant={externalMcpTransport === "http" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("http"); setExternalMcpTested(false); }}>远程 HTTP</Button><Button type="button" variant={externalMcpTransport === "stdio" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("stdio"); setExternalMcpTested(false); }}>本地命令</Button></div></div>}
+          {externalMcpRuntime === "desktop" && !externalMcpEditingServer && <div className="space-y-2"><Label>MCP 类型</Label><div className="flex gap-2"><Button type="button" variant={externalMcpTransport === "http" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("http"); setExternalMcpTested(false); }}>远程 HTTP</Button><Button type="button" variant={externalMcpTransport === "stdio" ? "default" : "outline"} size="sm" onClick={() => { setExternalMcpTransport("stdio"); setExternalMcpTested(false); }}>本地命令</Button></div></div>}
           <div className="space-y-2"><Label htmlFor="external-mcp-name">名称</Label><Input id="external-mcp-name" value={externalMcpName} onChange={(event) => { setExternalMcpName(event.target.value); setExternalMcpTested(false); }} placeholder="例如：项目文档 MCP" /></div>
-          {externalMcpTransport === "http" ? <><div className="space-y-2"><Label htmlFor="external-mcp-url">服务器 URL</Label><Input id="external-mcp-url" value={externalMcpUrl} onChange={(event) => { setExternalMcpUrl(event.target.value); setExternalMcpTested(false); }} placeholder="https://example.com/mcp" /></div><div className="space-y-2"><Label htmlFor="external-mcp-token">Bearer Token（可选）</Label><Input id="external-mcp-token" type="password" autoComplete="new-password" value={externalMcpToken} onChange={(event) => { setExternalMcpToken(event.target.value); setExternalMcpTested(false); }} placeholder="需要认证时填写" /></div></> : <><div className="space-y-2"><Label htmlFor="external-mcp-command">启动命令</Label><Input id="external-mcp-command" value={externalMcpCommand} onChange={(event) => { setExternalMcpCommand(event.target.value); setExternalMcpTested(false); }} placeholder="例如：npx" /></div><div className="space-y-2"><Label htmlFor="external-mcp-args">命令参数（JSON 数组）</Label><Textarea id="external-mcp-args" value={externalMcpArgsJson} onChange={(event) => { setExternalMcpArgsJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'["-y", "@example/mcp-server"]'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-env">环境变量（JSON 对象，可选）</Label><Textarea id="external-mcp-env" value={externalMcpEnvJson} onChange={(event) => { setExternalMcpEnvJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'{"API_KEY": "..."}'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-cwd">工作目录（可选）</Label><Input id="external-mcp-cwd" value={externalMcpCwd} onChange={(event) => { setExternalMcpCwd(event.target.value); setExternalMcpTested(false); }} placeholder="/path/to/project" /></div><p className="text-xs leading-relaxed text-amber-700">命令会在这台电脑上以当前用户权限运行。只配置并启动你信任的 MCP 程序。</p></>}
+          {externalMcpTransport === "http" ? <><div className="space-y-2"><Label htmlFor="external-mcp-url">服务器 URL</Label><Input id="external-mcp-url" value={externalMcpUrl} onChange={(event) => { setExternalMcpUrl(event.target.value); setExternalMcpTested(false); }} placeholder="https://example.com/mcp" /></div><div className="space-y-2"><Label htmlFor="external-mcp-token">Bearer Token（可选）</Label><Input id="external-mcp-token" type="password" autoComplete="new-password" value={externalMcpToken} onChange={(event) => { setExternalMcpToken(event.target.value); setExternalMcpTested(false); }} placeholder={externalMcpEditingServer?.hasToken ? "留空以保留已保存的 Token" : "需要认证时填写"} />{externalMcpEditingServer?.hasToken && <p className="text-xs text-muted-foreground">已保存的 Token 不会回传；留空即可保留，输入新 Token 可替换。</p>}</div></> : <><div className="space-y-2"><Label htmlFor="external-mcp-command">启动命令</Label><Input id="external-mcp-command" value={externalMcpCommand} onChange={(event) => { setExternalMcpCommand(event.target.value); setExternalMcpTested(false); }} placeholder="例如：npx" /></div><div className="space-y-2"><Label htmlFor="external-mcp-args">命令参数（JSON 数组）</Label><Textarea id="external-mcp-args" value={externalMcpArgsJson} onChange={(event) => { setExternalMcpArgsJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'["-y", "@example/mcp-server"]'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-env">环境变量（JSON 对象，可选）</Label><Textarea id="external-mcp-env" value={externalMcpEnvJson} onChange={(event) => { setExternalMcpEnvJson(event.target.value); setExternalMcpTested(false); }} rows={3} placeholder={'{"API_KEY": "..."}'} /></div><div className="space-y-2"><Label htmlFor="external-mcp-cwd">工作目录（可选）</Label><Input id="external-mcp-cwd" value={externalMcpCwd} onChange={(event) => { setExternalMcpCwd(event.target.value); setExternalMcpTested(false); }} placeholder="/path/to/project" /></div><p className="text-xs leading-relaxed text-amber-700">命令会在这台电脑上以当前用户权限运行。只配置并启动你信任的 MCP 程序。</p></>}
           <p className="text-xs leading-relaxed text-muted-foreground">凭据保存在当前用户配置中。未标记只读的工具需要手动授权；声明为有破坏性的工具仍不可用。</p>
           {externalMcpError && <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{externalMcpError}</div>}
           {externalMcpTested && <div className="space-y-1 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"><strong>连接成功</strong><p>{externalMcpPreview.filter((tool) => tool.readOnly).length} 个只读工具可直接启用</p>{externalMcpPreview.some((tool) => !tool.readOnly) && <small className="text-amber-700">{externalMcpPreview.filter((tool) => !tool.readOnly && tool.canEnable).length} 个未标记只读的工具可在添加后手动授权；{externalMcpPreview.filter((tool) => tool.destructive).length} 个声明为有破坏性的工具不可用。</small>}</div>}
         </div>
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" disabled={externalMcpTesting || (externalMcpTransport === "stdio" ? !externalMcpCommand.trim() : !externalMcpUrl.trim())} onClick={() => void testExternalMcp()}>{externalMcpTesting ? "测试中…" : externalMcpTransport === "stdio" ? "测试命令" : "测试连接"}</Button>
-          <Button type="button" disabled={externalMcpSaving || !externalMcpTested || !externalMcpName.trim()} onClick={() => void saveExternalMcp()}>{externalMcpSaving ? "添加中…" : "添加 MCP"}</Button>
+          <Button type="button" disabled={externalMcpSaving || !externalMcpTested || !externalMcpName.trim()} onClick={() => void saveExternalMcp()}>{externalMcpSaving ? externalMcpEditingServer ? "保存中…" : "添加中…" : externalMcpEditingServer ? "保存修改" : "添加远程 MCP"}</Button>
         </div>
       </DialogContent>
     </Dialog>
     {modelLimitNoticeOpen && <div className="model-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setModelLimitNoticeOpen(false); }}><section className="model-modal model-limit-dialog" role="alertdialog" aria-modal="true" aria-labelledby="model-limit-title" aria-describedby="model-limit-description"><div className="model-limit-icon">!</div><h2 id="model-limit-title">无法删除模型</h2><p id="model-limit-description">至少要保留一个模型。</p><div className="model-modal-actions"><button type="button" className="model-primary-button" onClick={() => setModelLimitNoticeOpen(false)}>我知道了</button></div></section></div>}
+    <AlertDialog open={localMcpToUninstall !== null} onOpenChange={(open) => { if (!open && !mcpUninstallingId) setLocalMcpToUninstall(null); }}>
+      <AlertDialogContent size="sm" className="border-zinc-200 bg-white">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="flex items-center gap-2"><TriangleAlert className="size-4 text-red-500" aria-hidden="true" />卸载本地 MCP</AlertDialogTitle>
+          <AlertDialogDescription>确定卸载“{localMcpToUninstall?.name}”吗？这会删除共享插件文件和当前账号对应的本地 MCP 配置；其他账号的配置会保留，但也将无法使用这份插件文件。</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={Boolean(mcpUninstallingId)}>取消</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" disabled={Boolean(mcpUninstallingId)} onClick={(event) => { event.preventDefault(); if (localMcpToUninstall) void uninstallLocalMcp(localMcpToUninstall); }}>{mcpUninstallingId ? "卸载中…" : "确认卸载"}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
     <AlertDialog open={projectToDelete !== null} onOpenChange={(open) => { if (!open && !projectDeleting) setProjectToDelete(null); }}>
       <AlertDialogContent size="sm" className="border-zinc-200 bg-white">
         <AlertDialogHeader>
