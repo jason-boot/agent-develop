@@ -1,7 +1,7 @@
 import { authenticated } from "@/lib/auth";
 import { connectLocalMcpClient, connectRemoteMcpClient } from "@/lib/mcp-client";
 import { ensureInternalMcpServers, isDesktopMcpRuntime, listExternalMcpServers, removeExternalMcpServer, saveExternalMcpServer, updateExternalMcpServer, type ExternalMcpServer } from "@/lib/external-mcp-config";
-import { currentBrowserBridge, type BrowserTool } from "@/lib/browser-bridge";
+import { currentBrowserBridge, type BrowserMcpStatus, type BrowserTool } from "@/lib/browser-bridge";
 import { callBrowserBridgeCommand } from "@/lib/browser-bridge";
 import { internalMcpCatalog } from "@/mcp-modules";
 import { readUserAppSetting, writeUserAppSetting } from "@/lib/local-db";
@@ -127,7 +127,7 @@ async function handlerPOST(request: Request) {
       const previousBridgeServerId = body.previousBridgeServerId === undefined ? "" : typeof body.previousBridgeServerId === "string" ? body.previousBridgeServerId : "";
       if (previousBridgeServerId && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(previousBridgeServerId) && !/^@[a-zA-Z0-9._~-]+\/[a-zA-Z0-9._~-]+$/.test(previousBridgeServerId)) return Response.json({ error: "原本地 MCP 编号无效。" }, { status: 400 });
       const bridge = currentBrowserBridge();
-      if (!bridge?.mcpServers.some((item) => item.id === body.bridgeServerId && item.connected)) return Response.json({ error: "本机 MCP 尚未连接，无法保存。" }, { status: 400 });
+      if (!bridge?.mcpServers.some((item: BrowserMcpStatus) => item.id === body.bridgeServerId && item.connected)) return Response.json({ error: "本机 MCP 尚未连接，无法保存。" }, { status: 400 });
       const existing = (await listExternalMcpServers()).find((item) => item.transport === "bridge" && (item.bridgeServerId === body.bridgeServerId || item.bridgeServerId === previousBridgeServerId));
       const server = await saveExternalMcpServer({ id: existing?.id, name: body.name, transport: "bridge", bridgeServerId: body.bridgeServerId });
       try {

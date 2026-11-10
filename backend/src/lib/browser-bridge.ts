@@ -3,6 +3,7 @@ import { currentUserId, findBrowserBridgeSession, findUserById, readUserAppSetti
 
 export type BrowserTool = { serverId: string; name: string; title?: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean } };
 export type BrowserMcpStatus = { id: string; configured: boolean; connected: boolean; toolCount: number; installSource?: string; installDirectory?: string; packageName?: string; installed?: boolean; installedVersion?: string; error?: string };
+type BrowserBridgeCommand = "bridge_configure_mcp" | "bridge_get_mcp_config" | "bridge_remove_mcp" | "bridge_install_mysql" | "bridge_install_playwright" | "bridge_install_builtin_mcp" | "bridge_uninstall_mcp";
 export const LATEST_BROWSER_BRIDGE_VERSION = "2.0.19";
 type Pending = { name: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 type Bridge = { userId: number; token: string; tools: BrowserTool[]; mcpServers: BrowserMcpStatus[]; installDirectory: string; version: string; lastSeen: number; pending: Map<string, Pending> };
@@ -98,11 +99,11 @@ export function completeBrowserCall(token: string, id: string, result: unknown, 
   bridge.pending.delete(id); clearTimeout(pending.timer);
   if (error) pending.reject(new Error(error));
   else {
-    if ((pending.name === "bridge_configure_mcp" || pending.name === "bridge_remove_mcp" || pending.name === "bridge_install_mysql") && result && typeof result === "object") {
+    if ((pending.name === "bridge_configure_mcp" || pending.name === "bridge_remove_mcp" || pending.name === "bridge_install_mysql" || pending.name === "bridge_install_playwright" || pending.name === "bridge_install_builtin_mcp" || pending.name === "bridge_uninstall_mcp") && result && typeof result === "object") {
       const payload = result as { tools?: BrowserTool[]; mcpServers?: BrowserMcpStatus[]; removedServerId?: string };
       if (Array.isArray(payload.tools)) bridge.tools = payload.tools;
       if (Array.isArray(payload.mcpServers)) bridge.mcpServers = payload.mcpServers;
-      if (pending.name === "bridge_remove_mcp" && payload.removedServerId) bridge.tools = bridge.tools.filter((tool) => tool.serverId !== payload.removedServerId);
+      if (pending.name === "bridge_remove_mcp" && payload.removedServerId) bridge.tools = bridge.tools.filter((tool: BrowserTool) => tool.serverId !== payload.removedServerId);
     }
     pending.resolve(result);
   }
@@ -131,6 +132,7 @@ export function callBrowserTool(serverId: string, name: string, args: Record<str
   return enqueueBrowserCall(serverId, name, args);
 }
 
-export function callBrowserBridgeCommand(name: "bridge_configure_mcp" | "bridge_get_mcp_config" | "bridge_remove_mcp" | "bridge_install_mysql", args: Record<string, unknown>) {
-  return enqueueBrowserCall("__bridge__", name, args, name === "bridge_install_mysql" ? 300 : 180);
+export function callBrowserBridgeCommand(name: BrowserBridgeCommand, args: Record<string, unknown>) {
+  const longRunning = name.startsWith("bridge_install_") || name === "bridge_uninstall_mcp";
+  return enqueueBrowserCall("__bridge__", name, args, longRunning ? 300 : 180);
 }

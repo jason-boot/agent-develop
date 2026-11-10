@@ -4,7 +4,7 @@ import { isDesktopMcpRuntime, listExternalMcpServers } from "@/lib/external-mcp-
 import { ModelServiceError, requestImageGeneration, requestModelAgentTurn, type AgentImageInput, type AgentMessage, type AgentToolCall, type AgentToolDefinition, type ModelConfig } from "@/lib/model-config";
 import { callImageGenerationMcpTool, getImageGenerationMcpConfig, imageGenerationMcpTool } from "@/lib/image-generation-mcp";
 import { createVideoGenerationTask, getVideoGenerationConfig, videoGenerationMcpTool } from "@/lib/video-generation-mcp";
-import { callBrowserTool, currentBrowserBridge } from "@/lib/browser-bridge";
+import { callBrowserTool, currentBrowserBridge, type BrowserMcpStatus } from "@/lib/browser-bridge";
 
 const emptySummary: UsageSummary = {
   requestCount: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, totalTokens: 0,
@@ -186,8 +186,8 @@ export async function answerQuestion(
         const bridgeMcpId = server.bridgeServerId || (server.name === "内部工具：MySQL MCP" ? "mysql" : server.name === "内部工具：Playwright MCP" ? "playwright" : tool.serverId);
         if (tool.serverId !== bridgeMcpId) continue;
         const mysqlMcp = bridgeMcpId === "mysql";
-        if (mysqlMcp && !browserBridge.mcpServers?.some((entry) => entry.id === "mysql" && entry.connected)) continue;
-        if (server.transport === "bridge" && !browserBridge.mcpServers?.some((entry) => entry.id === bridgeMcpId && entry.connected)) continue;
+        if (mysqlMcp && !browserBridge.mcpServers?.some((entry: BrowserMcpStatus) => entry.id === "mysql" && entry.connected)) continue;
+        if (server.transport === "bridge" && !browserBridge.mcpServers?.some((entry: BrowserMcpStatus) => entry.id === bridgeMcpId && entry.connected)) continue;
         const explicitlyAllowedBrowserAction = manuallyEnableableBrowserTools.has(tool.name) && server.allowedTools.includes(tool.name);
         const internallyReadOnlyMysqlTool = mysqlMcp && readOnlyMysqlTools.has(tool.name);
         if ((!internallyReadOnlyMysqlTool && tool.annotations?.destructiveHint === true && !explicitlyAllowedBrowserAction) || (!internallyReadOnlyMysqlTool && tool.annotations?.readOnlyHint !== true && !server.allowedTools.includes(tool.name)) || server.disabledTools.includes(tool.name)) continue;
@@ -201,7 +201,7 @@ export async function answerQuestion(
     const browserNavigateEnabled = [...allowed.values()].some((entry) => entry.bridgeMcpId === "playwright" && entry.remoteName === "browser_navigate");
     const browserToolsEnabled = [...allowed.values()].some((entry) => entry.bridgeMcpId === "playwright");
     const mysqlToolsEnabled = [...allowed.values()].some((entry) => entry.bridgeMcpId === "mysql");
-    const mysqlSetupNeeded = asksForLocalMysql && externalServers.some((server) => server.enabled && server.name === "内部工具：MySQL MCP") && !browserBridge?.mcpServers?.some((entry) => entry.id === "mysql" && entry.connected);
+    const mysqlSetupNeeded = asksForLocalMysql && externalServers.some((server) => server.enabled && server.name === "内部工具：MySQL MCP") && !browserBridge?.mcpServers?.some((entry: BrowserMcpStatus) => entry.id === "mysql" && entry.connected);
     const browserInstructions = browserToolsEnabled
       ? "\n\nPlaywright 页面操作规则：调用工具时，使用本轮工具列表中实际提供的完整工具名（可能带 ext_ 前缀），不要自行拼写工具名。需要点击、输入或填写表单时，先调用页面快照工具查看当前页面。交互工具的 target 必须使用最近一次快照返回的具体 ref；不要把 textbox、button、按钮文字等通用名称直接当成 target，也不要猜 ref。页面导航或操作后目标不存在时，重新获取快照，再根据新的 ref 操作；不要原样重复失败的参数。"
       : "";
