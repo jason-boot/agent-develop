@@ -14,11 +14,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { diffLines } from "diff";
-import { ArrowDown, ArrowUp, Check, ChevronDown, Copy, Download, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Plus, RefreshCw, Trash2, TriangleAlert, UserRound, Wrench, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronDown, Copy, Download, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Plus, RefreshCw, Trash2, TriangleAlert, UserRound, Wrench, X } from "lucide-react";
 
 type ImageAttachment = { id: string; name: string; mimeType: "image/jpeg" | "image/png" | "image/webp"; dataUrl: string };
 type Message = { role: "assistant" | "user"; content: string; images?: ImageAttachment[]; generatedImages?: string[]; result?: ChatReply; projectId?: string; error?: boolean };
-type Conversation = { id: string; title: string; updatedAt: number; pinned?: boolean; projectId?: string; projectName?: string; messages?: Message[] };
+type Conversation = { id: string; title: string; updatedAt: number; pinned?: boolean; archived?: boolean; projectId?: string; projectName?: string; messages?: Message[] };
 const sortConversations = (items: Conversation[]) => [...items].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt - a.updatedAt);
 const formatDateTime = (timestamp?: number) => {
   if (!Number.isFinite(timestamp)) return "—";
@@ -169,16 +169,18 @@ async function removeStoredProjectDirectory(ownerId: number, id: string) {
   });
 }
 
-function ConversationEntry({ conversation, active, disabled, menuOpen, className = "", onOpen, onToggleMenu, onRename, onTogglePin, onDelete }: {
+function ConversationEntry({ conversation, active, disabled, menuOpen, archived = false, className = "", onOpen, onToggleMenu, onRename, onTogglePin, onToggleArchive, onDelete }: {
   conversation: Conversation;
   active: boolean;
   disabled: boolean;
   menuOpen: boolean;
+  archived?: boolean;
   className?: string;
   onOpen: () => void;
   onToggleMenu: () => void;
   onRename: () => void;
   onTogglePin: () => void;
+  onToggleArchive: () => void;
   onDelete: () => void;
 }) {
   const moreButtonRef = useRef<HTMLButtonElement>(null);
@@ -186,12 +188,12 @@ function ConversationEntry({ conversation, active, disabled, menuOpen, className
   useEffect(() => {
     if (!menuOpen || !moreButtonRef.current) return;
     const rect = moreButtonRef.current.getBoundingClientRect();
-    setMenuPosition({ top: Math.min(rect.bottom + 4, window.innerHeight - 88), left: Math.max(8, Math.min(rect.left, window.innerWidth - 148)) });
-  }, [menuOpen]);
+    setMenuPosition({ top: Math.min(rect.bottom + 4, window.innerHeight - (archived ? 80 : 150)), left: Math.max(8, Math.min(rect.left, window.innerWidth - 148)) });
+  }, [archived, menuOpen]);
   return <div className={`conversation-entry${active ? " active" : ""}${menuOpen ? " menu-open" : ""}`} data-conversation-menu>
     <button type="button" className={`conversation-history-item${active ? " active" : ""}${conversation.pinned ? " pinned" : ""} ${className}`} disabled={disabled} title={conversation.title} onClick={onOpen}>{conversation.pinned ? <><span>{conversation.title}</span><Pin aria-label="已置顶" /></> : conversation.title}</button>
     <button ref={moreButtonRef} type="button" className="conversation-more-button" aria-label={`会话“${conversation.title}”的更多操作`} aria-expanded={menuOpen} disabled={disabled} onClick={(event) => { event.stopPropagation(); onToggleMenu(); }}><MoreHorizontal aria-hidden="true" /></button>
-    {menuOpen && menuPosition && typeof document !== "undefined" && createPortal(<div className="conversation-item-menu" role="menu" data-conversation-item-menu style={{ position: "fixed", top: menuPosition.top, right: "auto", left: menuPosition.left }}><button type="button" role="menuitem" disabled={disabled} onClick={(event) => { event.stopPropagation(); onRename(); }}><Pencil aria-hidden="true" />重命名</button><button type="button" role="menuitem" disabled={disabled} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}><Pin aria-hidden="true" />{conversation.pinned ? "取消置顶" : "置顶"}</button><button type="button" role="menuitem" disabled={disabled} onClick={(event) => { event.stopPropagation(); onDelete(); }}><Trash2 aria-hidden="true" />删除</button></div>, document.body)}
+    {menuOpen && menuPosition && typeof document !== "undefined" && createPortal(<div className="conversation-item-menu" role="menu" data-conversation-item-menu style={{ position: "fixed", top: menuPosition.top, right: "auto", left: menuPosition.left }}>{archived ? <button type="button" role="menuitem" disabled={disabled} onClick={(event) => { event.stopPropagation(); onToggleArchive(); }}><ArchiveRestore aria-hidden="true" />恢复</button> : <><button type="button" role="menuitem" disabled={disabled} onClick={(event) => { event.stopPropagation(); onRename(); }}><Pencil aria-hidden="true" />重命名</button><button type="button" role="menuitem" disabled={disabled} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}><Pin aria-hidden="true" />{conversation.pinned ? "取消置顶" : "置顶"}</button><button type="button" role="menuitem" disabled={disabled} onClick={(event) => { event.stopPropagation(); onToggleArchive(); }}><Archive aria-hidden="true" />归档</button></>}<button type="button" role="menuitem" disabled={disabled} onClick={(event) => { event.stopPropagation(); onDelete(); }}><Trash2 aria-hidden="true" />删除</button></div>, document.body)}
   </div>;
 }
 
@@ -545,6 +547,9 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([{ role: "assistant", content: welcome }]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [archivedConversations, setArchivedConversations] = useState<Conversation[]>([]);
+  const [archiveExpanded, setArchiveExpanded] = useState(false);
+  const [archiveLoading, setArchiveLoading] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState("");
   const [conversationProjectId, setConversationProjectId] = useState("");
   const [projectConversationMode, setProjectConversationMode] = useState(false);
@@ -1039,6 +1044,37 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     } catch (e) { setError(e instanceof Error ? e.message : "更新置顶状态失败。"); }
   }
 
+  async function toggleConversationArchive(conversation: Conversation, archived: boolean) {
+    setOpenConversationMenuId("");
+    setError("");
+    try {
+      const response = await fetch(`/api/conversations/${encodeURIComponent(conversation.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ archived }) });
+      const data = await readApiJson<{ error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || (archived ? "归档会话失败。" : "恢复会话失败。"));
+      if (archived) {
+        setConversations((items) => items.filter((item) => item.id !== conversation.id));
+        setArchivedConversations((items) => sortConversations([{ ...conversation, archived: true }, ...items.filter((item) => item.id !== conversation.id)]));
+      } else {
+        setArchivedConversations((items) => items.filter((item) => item.id !== conversation.id));
+        setConversations((items) => sortConversations([{ ...conversation, archived: false }, ...items.filter((item) => item.id !== conversation.id)]));
+      }
+    } catch (e) { setError(e instanceof Error ? e.message : (archived ? "归档会话失败。" : "恢复会话失败。")); }
+  }
+
+  async function toggleArchiveList() {
+    const expanded = !archiveExpanded;
+    setArchiveExpanded(expanded);
+    if (!expanded) return;
+    setArchiveLoading(true);
+    try {
+      const response = await fetch("/api/conversations?archived=true");
+      const data = await readApiJson<{ conversations?: Conversation[]; error?: string }>(response);
+      if (!response.ok) throw new Error(data.error || "读取归档会话失败。");
+      setArchivedConversations(data.conversations || []);
+    } catch (e) { setError(e instanceof Error ? e.message : "读取归档会话失败。"); }
+    finally { setArchiveLoading(false); }
+  }
+
   async function confirmRenameConversation() {
     const target = conversationToRename;
     const title = conversationRenameName.trim();
@@ -1076,6 +1112,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       const data = await readApiJson<{ deleted?: boolean; error?: string }>(response);
       if (!response.ok || !data.deleted) throw new Error(data.error || "删除会话失败。");
       setConversations((items) => items.filter((item) => item.id !== target.id));
+      setArchivedConversations((items) => items.filter((item) => item.id !== target.id));
       setConversationToDelete(null);
       if (activeConversationId === target.id) {
         setActiveConversationId("");
@@ -2072,11 +2109,13 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       <button className="new-chat" disabled={loading} onClick={startNewConversation}><svg className="new-chat-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg><span>开启新会话</span></button>
       {canOpenLocalProject && <button type="button" className="new-project" disabled={loading || !projectDirectoryStorageReady} onClick={() => void selectProjectDirectory()}><FolderOpen aria-hidden="true" /><span>打开本地项目(本地文件夹)</span></button>}
       {authenticated && <button type="button" className={`new-project mcp-tools-menu-item${mcpPageOpen ? " active" : ""}`} onClick={() => void openMcpTools()}><Wrench aria-hidden="true" /><span>MCP 工具</span></button>}
-      {projectConversationGroups.length > 0 && <div className="project-list"><div className="project-list-heading">项目</div>{projectConversationGroups.map((group) => <div className="project-chat-group" key={group.id}><div className="project-list-row"><div className="project-list-select" title={group.name}><FolderPlus aria-hidden="true" /><span>{group.name}</span></div><ProjectMenuButton projectName={group.name} open={openProjectMenuId === group.id} disabled={loading || projectDeleting || conversationDeleting || conversationRenaming} onToggle={() => { setOpenConversationMenuId(""); setOpenProjectMenuId(openProjectMenuId === group.id ? "" : group.id); }} onDelete={() => requestDeleteProject(group)} /><button type="button" className="project-new-chat" aria-label={`在项目 ${group.name} 下新建会话`} title="在此项目下新建会话" disabled={loading || projectDeleting} onClick={() => startProjectConversation(group.id)}><Plus aria-hidden="true" /></button></div>{sortConversations(group.conversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={!mcpPageOpen && activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming || projectDeleting} menuOpen={openConversationMenuId === conversation.id} className="project-conversation-item" onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />)}</div>)}</div>}
+      {projectConversationGroups.length > 0 && <div className="project-list"><div className="project-list-heading">项目</div>{projectConversationGroups.map((group) => <div className="project-chat-group" key={group.id}><div className="project-list-row"><div className="project-list-select" title={group.name}><FolderPlus aria-hidden="true" /><span>{group.name}</span></div><ProjectMenuButton projectName={group.name} open={openProjectMenuId === group.id} disabled={loading || projectDeleting || conversationDeleting || conversationRenaming} onToggle={() => { setOpenConversationMenuId(""); setOpenProjectMenuId(openProjectMenuId === group.id ? "" : group.id); }} onDelete={() => requestDeleteProject(group)} /><button type="button" className="project-new-chat" aria-label={`在项目 ${group.name} 下新建会话`} title="在此项目下新建会话" disabled={loading || projectDeleting} onClick={() => startProjectConversation(group.id)}><Plus aria-hidden="true" /></button></div>{sortConversations(group.conversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={!mcpPageOpen && activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming || projectDeleting} menuOpen={openConversationMenuId === conversation.id} className="project-conversation-item" onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onToggleArchive={() => void toggleConversationArchive(conversation, true)} onDelete={() => requestDeleteConversation(conversation)} />)}</div>)}</div>}
       {projectError && <div className="project-error" role="alert">{projectError}</div>}
       <div className="conversation-history">
         <div className="conversation-history-heading">最近会话</div>
-        {recentConversations.length ? sortConversations(recentConversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={!mcpPageOpen && activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming} menuOpen={openConversationMenuId === conversation.id} onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onDelete={() => requestDeleteConversation(conversation)} />) : <div className="conversation-history-empty">暂无会话</div>}
+        {recentConversations.length ? sortConversations(recentConversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={!mcpPageOpen && activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming} menuOpen={openConversationMenuId === conversation.id} onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onToggleArchive={() => void toggleConversationArchive(conversation, true)} onDelete={() => requestDeleteConversation(conversation)} />) : <div className="conversation-history-empty">暂无会话</div>}
+        <button type="button" className={`archive-list-toggle${archiveExpanded ? " expanded" : ""}`} aria-expanded={archiveExpanded} onClick={() => void toggleArchiveList()}><Archive aria-hidden="true" /><span>归档会话</span><ChevronDown aria-hidden="true" /></button>
+        {archiveExpanded && <div className="archived-conversation-list">{archiveLoading ? <div className="conversation-history-empty">正在读取…</div> : archivedConversations.length ? sortConversations(archivedConversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} archived active={!mcpPageOpen && activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming} menuOpen={openConversationMenuId === conversation.id} onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onToggleArchive={() => void toggleConversationArchive(conversation, false)} onDelete={() => requestDeleteConversation(conversation)} />) : <div className="conversation-history-empty">暂无归档会话</div>}</div>}
       </div>
       <div className="sidebar-bottom">
         {authenticated ? <div className="sidebar-account"><div className="user-chip"><SidebarAvatar username={username} avatarUrl={avatarUrl} /><div className="sidebar-account-name"><strong>{username || "已登录用户"}</strong><small>已登录</small></div><button type="button" className="sidebar-account-more" aria-label="账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><MoreHorizontal aria-hidden="true" /></button></div>{userMenuOpen && <div className="sidebar-account-menu"><button type="button" className="sidebar-account-profile" onClick={() => { setUserMenuOpen(false); onOpenProfile(); }}><UserRound aria-hidden="true" />个人资料</button><button type="button" className="sidebar-account-logout" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut aria-hidden="true" />退出登录</button></div>}</div> : <button type="button" className="guest-sidebar-login" onClick={onRequireLogin}>登录</button>}

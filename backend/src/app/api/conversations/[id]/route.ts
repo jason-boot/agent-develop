@@ -1,5 +1,5 @@
 import { authenticated } from "@/lib/auth";
-import { deleteConversation, getConversation, saveConversation, setConversationPinned, type StoredMessage } from "@/lib/local-db";
+import { deleteConversation, getConversation, saveConversation, setConversationArchived, setConversationPinned, type StoredMessage } from "@/lib/local-db";
 
 export const runtime = "nodejs";
 
@@ -53,13 +53,20 @@ export const PUT = authenticated(handlerPUT);
 async function handlerPATCH(request: Request, { params }: RouteContext) {
   try {
     const { id } = await params;
-    const body = await request.json() as { pinned?: unknown };
-    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id) || typeof body.pinned !== "boolean") return Response.json({ error: "置顶状态无效。" }, { status: 400 });
-    if (!await setConversationPinned(id, body.pinned)) return Response.json({ error: "未找到该会话。" }, { status: 404 });
-    return Response.json({ pinned: body.pinned });
+    const body = await request.json() as { pinned?: unknown; archived?: unknown };
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) return Response.json({ error: "会话编号无效。" }, { status: 400 });
+    if (typeof body.pinned === "boolean" && body.archived === undefined) {
+      if (!await setConversationPinned(id, body.pinned)) return Response.json({ error: "未找到该会话。" }, { status: 404 });
+      return Response.json({ pinned: body.pinned });
+    }
+    if (typeof body.archived === "boolean" && body.pinned === undefined) {
+      if (!await setConversationArchived(id, body.archived)) return Response.json({ error: "未找到该会话。" }, { status: 404 });
+      return Response.json({ archived: body.archived });
+    }
+    return Response.json({ error: "会话状态无效。" }, { status: 400 });
   } catch (error) {
-    console.error("Update conversation pin failed", error);
-    return Response.json({ error: "更新会话置顶状态失败。" }, { status: 500 });
+    console.error("Update conversation state failed", error);
+    return Response.json({ error: "更新会话状态失败。" }, { status: 500 });
   }
 }
 export const PATCH = authenticated(handlerPATCH);

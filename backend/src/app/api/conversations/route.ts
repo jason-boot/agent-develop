@@ -4,7 +4,7 @@ import { listConversations } from "@/lib/local-db";
 export const runtime = "nodejs";
 
 async function handlerGET(request: Request) {
-  try { return Response.json({ conversations: await listConversations() }); }
+  try { return Response.json({ conversations: await listConversations(new URL(request.url).searchParams.get("archived") === "true") }); }
   catch (error) {
     console.error("List conversations failed", error);
     return Response.json({ error: "读取本地会话失败。" }, { status: 500 });

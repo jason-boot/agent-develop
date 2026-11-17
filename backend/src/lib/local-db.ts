@@ -6,7 +6,7 @@ import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 export type StoredMessage = { role: "assistant" | "user"; content: string; error?: boolean; result?: unknown };
-export type StoredConversation = { id: string; title: string; updatedAt: number; pinned: boolean; projectId?: string; projectName?: string; messages: StoredMessage[] };
+export type StoredConversation = { id: string; title: string; updatedAt: number; pinned: boolean; archived: boolean; projectId?: string; projectName?: string; messages: StoredMessage[] };
 export type StoredVideoGenerationTask = { id: string; userId: number; conversationId: string; providerTaskId: string; endpoint: string; apiKey: string; model: string; resolution: string; duration: number; status: string; videoUrl: string | null; error: string | null; createdAt: number; updatedAt: number; nextPollAt: number; pollLeaseUntil: number | null; pollAttempts: number };
 
 const userContext = new AsyncLocalStorage<number>();
@@ -100,6 +100,7 @@ function ensureConversationProjectColumns(database: DatabaseSync) {
   if (!columns.some((column) => column.name === "project_id")) database.exec("ALTER TABLE conversations ADD COLUMN project_id TEXT");
   if (!columns.some((column) => column.name === "project_name")) database.exec("ALTER TABLE conversations ADD COLUMN project_name TEXT");
   if (!columns.some((column) => column.name === "pinned")) database.exec("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  if (!columns.some((column) => column.name === "archived")) database.exec("ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
 }
 
 function getDatabase() {
@@ -148,7 +149,8 @@ function getDatabase() {
         updated_at INTEGER NOT NULL,
         project_id TEXT,
         project_name TEXT,
-        pinned INTEGER NOT NULL DEFAULT 0
+        pinned INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS conversation_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -262,7 +264,7 @@ async function getMysqlPool() {
   global.dqMysqlPool = pool;
   global.dqMysqlSchemaReady ||= (async () => {
     const statements = [
-      `CREATE TABLE IF NOT EXISTS conversations (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, title TEXT NOT NULL, updated_at BIGINT NOT NULL, project_id VARCHAR(128) NULL, project_name TEXT NULL, pinned TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      `CREATE TABLE IF NOT EXISTS conversations (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, title TEXT NOT NULL, updated_at BIGINT NOT NULL, project_id VARCHAR(128) NULL, project_name TEXT NULL, pinned TINYINT NOT NULL DEFAULT 0, archived TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS conversation_messages (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, conversation_id VARCHAR(128) NOT NULL, message_index INT NOT NULL, role VARCHAR(32) NOT NULL, content LONGTEXT NOT NULL, is_error TINYINT NOT NULL DEFAULT 0, result_json LONGTEXT NULL, UNIQUE KEY conversation_message_order (conversation_id, message_index), CONSTRAINT conversation_messages_fk FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS video_generation_tasks (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, conversation_id VARCHAR(128) NOT NULL, provider_task_id VARCHAR(128) NOT NULL, endpoint TEXT NOT NULL, api_key TEXT NOT NULL, model VARCHAR(128) NOT NULL, resolution VARCHAR(16) NOT NULL, duration INT NOT NULL, status VARCHAR(24) NOT NULL, video_url TEXT NULL, error TEXT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, next_poll_at BIGINT NOT NULL, poll_lease_until BIGINT NULL, poll_attempts INT NOT NULL DEFAULT 0, KEY video_generation_tasks_due (status, next_poll_at, poll_lease_until), KEY video_generation_tasks_conversation (user_id, conversation_id, created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       `CREATE TABLE IF NOT EXISTS model_configs (id VARCHAR(128) PRIMARY KEY, user_id BIGINT NOT NULL, name VARCHAR(255) NOT NULL, protocol VARCHAR(32) NOT NULL, base_url TEXT NOT NULL, full_address TINYINT NOT NULL, model TEXT NOT NULL, api_key TEXT NOT NULL, vendor VARCHAR(128) NOT NULL DEFAULT 'custom', models_url TEXT NOT NULL, image_generation_model VARCHAR(255) NOT NULL DEFAULT '', image_generation_config JSON NULL, sort_order INT NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -273,6 +275,8 @@ async function getMysqlPool() {
       `CREATE TABLE IF NOT EXISTS user_identities (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, user_id BIGINT NOT NULL, provider VARCHAR(32) NOT NULL, provider_user_id VARCHAR(128) NOT NULL, provider_username VARCHAR(191) NOT NULL DEFAULT '', provider_display_name VARCHAR(191) NOT NULL DEFAULT '', avatar_url TEXT NOT NULL, created_at BIGINT NOT NULL, UNIQUE KEY identity_provider_user (provider, provider_user_id), UNIQUE KEY identity_user_provider (user_id, provider), CONSTRAINT user_identities_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     ];
     for (const statement of statements) await pool.query(statement);
+    const [conversationColumns] = await pool.query("SHOW COLUMNS FROM conversations");
+    if (!(conversationColumns as Array<{ Field: string }>).some((column) => column.Field === "archived")) await pool.query("ALTER TABLE conversations ADD COLUMN archived TINYINT NOT NULL DEFAULT 0");
     const [modelColumns] = await pool.query("SHOW COLUMNS FROM model_configs");
     const modelColumnNames = new Set((modelColumns as Array<{ Field: string }>).map((column) => column.Field));
     if (!modelColumnNames.has("image_generation_model")) await pool.query("ALTER TABLE model_configs ADD COLUMN image_generation_model VARCHAR(255) NOT NULL DEFAULT ''");
@@ -661,39 +665,41 @@ export async function writeExternalMcpConfig(store: { servers: Array<{ id: strin
   } catch (error) { database.exec("ROLLBACK"); throw error; }
 }
 
-export async function listConversations() {
+export async function listConversations(archived = false) {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [rows] = await pool.execute("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC", [currentUserId()]);
-    return (rows as Array<{ id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null }>).map((row) => ({ ...row, pinned: Boolean(row.pinned) }));
+    const [rows] = await pool.execute("SELECT id, title, updated_at AS updatedAt, pinned, archived, project_id AS projectId, project_name AS projectName FROM conversations WHERE user_id = ? AND archived = ? ORDER BY pinned DESC, updated_at DESC", [currentUserId(), archived ? 1 : 0]);
+    return (rows as Array<{ id: string; title: string; updatedAt: number; pinned: number; archived: number; projectId: string | null; projectName: string | null }>).map((row) => ({ ...row, pinned: Boolean(row.pinned), archived: Boolean(row.archived) }));
   }
-  return (getDatabase().prepare("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC").all(currentUserId()) as Array<{ id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null }>).map((row) => ({ ...row, pinned: Boolean(row.pinned) }));
+  return (getDatabase().prepare("SELECT id, title, updated_at AS updatedAt, pinned, archived, project_id AS projectId, project_name AS projectName FROM conversations WHERE user_id = ? AND archived = ? ORDER BY pinned DESC, updated_at DESC").all(currentUserId(), archived ? 1 : 0) as Array<{ id: string; title: string; updatedAt: number; pinned: number; archived: number; projectId: string | null; projectName: string | null }>).map((row) => ({ ...row, pinned: Boolean(row.pinned), archived: Boolean(row.archived) }));
 }
 
 export async function getConversation(id: string): Promise<StoredConversation | null> {
   if (await getProvider() === "mysql") {
     const pool = await getMysqlPool();
-    const [conversationRows] = await pool.execute("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE id = ? AND user_id = ?", [id, currentUserId()]);
-    const row = (conversationRows as Array<{ id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null }>)[0];
+    const [conversationRows] = await pool.execute("SELECT id, title, updated_at AS updatedAt, pinned, archived, project_id AS projectId, project_name AS projectName FROM conversations WHERE id = ? AND user_id = ?", [id, currentUserId()]);
+    const row = (conversationRows as Array<{ id: string; title: string; updatedAt: number; pinned: number; archived: number; projectId: string | null; projectName: string | null }>)[0];
     if (!row) return null;
     const [messageRows] = await pool.execute("SELECT role, content, is_error AS error, result_json AS resultJson FROM conversation_messages WHERE conversation_id = ? ORDER BY message_index", [id]);
-    const { projectId, projectName, pinned, ...conversation } = row;
+    const { projectId, projectName, pinned, archived, ...conversation } = row;
     return {
       ...conversation,
       pinned: Boolean(pinned),
+      archived: Boolean(archived),
       ...(projectId ? { projectId } : {}),
       ...(projectName ? { projectName } : {}),
       messages: (messageRows as Array<{ role: StoredMessage["role"]; content: string; error: number; resultJson: string | null }>).map((message) => ({ role: message.role, content: message.content, ...(message.error ? { error: true } : {}), ...(message.resultJson ? { result: JSON.parse(message.resultJson) } : {}) })),
     };
   }
   const database = getDatabase();
-  const row = database.prepare("SELECT id, title, updated_at AS updatedAt, pinned, project_id AS projectId, project_name AS projectName FROM conversations WHERE id = ? AND user_id = ?").get(id, currentUserId()) as { id: string; title: string; updatedAt: number; pinned: number; projectId: string | null; projectName: string | null } | undefined;
+  const row = database.prepare("SELECT id, title, updated_at AS updatedAt, pinned, archived, project_id AS projectId, project_name AS projectName FROM conversations WHERE id = ? AND user_id = ?").get(id, currentUserId()) as { id: string; title: string; updatedAt: number; pinned: number; archived: number; projectId: string | null; projectName: string | null } | undefined;
   if (!row) return null;
   const messages = database.prepare("SELECT role, content, is_error AS error, result_json AS resultJson FROM conversation_messages WHERE conversation_id = ? ORDER BY message_index").all(id) as Array<{ role: StoredMessage["role"]; content: string; error: number; resultJson: string | null }>;
-  const { projectId, projectName, pinned, ...conversation } = row;
+  const { projectId, projectName, pinned, archived, ...conversation } = row;
   return {
     ...conversation,
     pinned: Boolean(pinned),
+    archived: Boolean(archived),
     ...(projectId ? { projectId } : {}),
     ...(projectName ? { projectName } : {}),
     messages: messages.map((message) => ({
@@ -756,6 +762,15 @@ export async function setConversationPinned(id: string, pinned: boolean) {
     return (result as { affectedRows: number }).affectedRows > 0;
   }
   return getDatabase().prepare("UPDATE conversations SET pinned = ? WHERE id = ? AND user_id = ?").run(pinned ? 1 : 0, id, currentUserId()).changes > 0;
+}
+
+export async function setConversationArchived(id: string, archived: boolean) {
+  if (await getProvider() === "mysql") {
+    const pool = await getMysqlPool();
+    const [result] = await pool.execute("UPDATE conversations SET archived = ? WHERE id = ? AND user_id = ?", [archived ? 1 : 0, id, currentUserId()]);
+    return (result as { affectedRows: number }).affectedRows > 0;
+  }
+  return getDatabase().prepare("UPDATE conversations SET archived = ? WHERE id = ? AND user_id = ?").run(archived ? 1 : 0, id, currentUserId()).changes > 0;
 }
 
 export async function readUserAppSetting(key: string) {
