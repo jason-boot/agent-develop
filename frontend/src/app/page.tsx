@@ -569,6 +569,7 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
   const promptHistoryDraftRef = useRef("");
   const [pendingImages, setPendingImages] = useState<ImageAttachment[]>([]);
   const [projects, setProjects] = useState<LocalProject[]>([]);
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<string[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [projectError, setProjectError] = useState("");
   const [projectDirectoryStorageReady, setProjectDirectoryStorageReady] = useState(false);
@@ -754,6 +755,28 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
     }).finally(() => { if (!cancelled) setProjectDirectoryStorageReady(true); });
     return () => { cancelled = true; };
   }, [authenticated, userId]);
+
+  useEffect(() => {
+    if (!userId) { setCollapsedProjectIds([]); return; }
+    try {
+      const stored = window.localStorage.getItem(`little-sunshine-collapsed-projects-${userId}`);
+      const parsed: unknown = stored ? JSON.parse(stored) : [];
+      setCollapsedProjectIds(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : []);
+    } catch { setCollapsedProjectIds([]); }
+  }, [userId]);
+
+  function toggleProjectCollapsed(projectId: string) {
+    const isCollapsing = !collapsedProjectIds.includes(projectId);
+    const next = isCollapsing
+      ? [...collapsedProjectIds, projectId]
+      : collapsedProjectIds.filter((id) => id !== projectId);
+    setCollapsedProjectIds(next);
+    if (isCollapsing) { setOpenConversationMenuId(""); setOpenProjectMenuId(""); }
+    if (userId) {
+      try { window.localStorage.setItem(`little-sunshine-collapsed-projects-${userId}`, JSON.stringify(next)); }
+      catch { /* Keep the current view state if browser storage is unavailable. */ }
+    }
+  }
 
   useEffect(() => {
     if (!authenticated) { setConversationStorageReady(true); return; }
@@ -2109,7 +2132,19 @@ function ChatApp({ authenticated, userId, username, avatarUrl, startFreshSession
       <button className="new-chat" disabled={loading} onClick={startNewConversation}><svg className="new-chat-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg><span>开启新会话</span></button>
       {canOpenLocalProject && <button type="button" className="new-project" disabled={loading || !projectDirectoryStorageReady} onClick={() => void selectProjectDirectory()}><FolderOpen aria-hidden="true" /><span>打开本地项目(本地文件夹)</span></button>}
       {authenticated && <button type="button" className={`new-project mcp-tools-menu-item${mcpPageOpen ? " active" : ""}`} onClick={() => void openMcpTools()}><Wrench aria-hidden="true" /><span>MCP 工具</span></button>}
-      {projectConversationGroups.length > 0 && <div className="project-list"><div className="project-list-heading">项目</div>{projectConversationGroups.map((group) => <div className="project-chat-group" key={group.id}><div className="project-list-row"><div className="project-list-select" title={group.name}><FolderPlus aria-hidden="true" /><span>{group.name}</span></div><ProjectMenuButton projectName={group.name} open={openProjectMenuId === group.id} disabled={loading || projectDeleting || conversationDeleting || conversationRenaming} onToggle={() => { setOpenConversationMenuId(""); setOpenProjectMenuId(openProjectMenuId === group.id ? "" : group.id); }} onDelete={() => requestDeleteProject(group)} /><button type="button" className="project-new-chat" aria-label={`在项目 ${group.name} 下新建会话`} title="在此项目下新建会话" disabled={loading || projectDeleting} onClick={() => startProjectConversation(group.id)}><Plus aria-hidden="true" /></button></div>{sortConversations(group.conversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={!mcpPageOpen && activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming || projectDeleting} menuOpen={openConversationMenuId === conversation.id} className="project-conversation-item" onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onToggleArchive={() => void toggleConversationArchive(conversation, true)} onDelete={() => requestDeleteConversation(conversation)} />)}</div>)}</div>}
+      {projectConversationGroups.length > 0 && <div className="project-list"><div className="project-list-heading">项目</div>{projectConversationGroups.map((group) => {
+        const collapsed = collapsedProjectIds.includes(group.id);
+        const conversationListId = `project-conversations-${group.id}`;
+        return <div className="project-chat-group" key={group.id}>
+          <div className="project-list-row">
+            <button type="button" className="project-collapse-toggle" aria-label={`${collapsed ? "展开" : "收起"}项目 ${group.name} 的会话`} aria-expanded={!collapsed} aria-controls={conversationListId} title={collapsed ? "展开项目会话" : "收起项目会话"} onClick={() => toggleProjectCollapsed(group.id)}><ChevronDown aria-hidden="true" /></button>
+            <div className="project-list-select" title={group.name}><FolderPlus aria-hidden="true" /><span>{group.name}</span></div>
+            <ProjectMenuButton projectName={group.name} open={openProjectMenuId === group.id} disabled={loading || projectDeleting || conversationDeleting || conversationRenaming} onToggle={() => { setOpenConversationMenuId(""); setOpenProjectMenuId(openProjectMenuId === group.id ? "" : group.id); }} onDelete={() => requestDeleteProject(group)} />
+            <button type="button" className="project-new-chat" aria-label={`在项目 ${group.name} 下新建会话`} title="在此项目下新建会话" disabled={loading || projectDeleting} onClick={() => startProjectConversation(group.id)}><Plus aria-hidden="true" /></button>
+          </div>
+          <div id={conversationListId} hidden={collapsed}>{sortConversations(group.conversations).map((conversation) => <ConversationEntry key={conversation.id} conversation={conversation} active={!mcpPageOpen && activeConversationId === conversation.id} disabled={loading || conversationDeleting || conversationRenaming || projectDeleting} menuOpen={openConversationMenuId === conversation.id} className="project-conversation-item" onOpen={() => void openConversation(conversation)} onToggleMenu={() => setOpenConversationMenuId(openConversationMenuId === conversation.id ? "" : conversation.id)} onRename={() => requestRenameConversation(conversation)} onTogglePin={() => void toggleConversationPin(conversation)} onToggleArchive={() => void toggleConversationArchive(conversation, true)} onDelete={() => requestDeleteConversation(conversation)} />)}</div>
+        </div>;
+      })}</div>}
       {projectError && <div className="project-error" role="alert">{projectError}</div>}
       <div className="conversation-history">
         <div className="conversation-history-heading">最近会话</div>
